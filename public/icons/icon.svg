@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="100" fill="#15803d"/>
+  <circle cx="256" cy="256" r="180" fill="#16a34a"/>
+  <!-- Shopping bag / Kirana cart icon -->
+  <path d="M160 200 L180 360 C180 375 195 390 210 390 L302 390 C317 390 332 375 332 360 L352 200 Z" fill="#ffffff"/>
+  <path d="M210 200 C210 140 302 140 302 200" fill="none" stroke="#facc15" stroke-width="24" stroke-linecap="round"/>
+  <!-- Leaf accent -->
+  <circle cx="340" cy="180" r="28" fill="#facc15"/>
+</svg>
