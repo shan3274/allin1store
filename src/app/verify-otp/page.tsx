@@ -1,157 +1,156 @@
 'use client';
 
-import React, { useState, useEffect, Suspense } from 'react';
-import Link from 'next/link';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Navbar } from '@/components/Navbar';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
-import { ArrowLeft, CheckCircle2, RotateCw } from 'lucide-react';
+import { formatPhone } from '@/lib/format';
+import { safeRedirect } from '@/lib/safeRedirect';
 
-function VerifyOtpForm() {
+const LENGTH = 6;
+const RESEND_SECONDS = 30;
+
+function VerifyForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const phone = searchParams.get('phone') || '9876543210';
-  const redirect = searchParams.get('redirect') || '/';
-  const { verifyOtp } = useAuth();
+  const params = useSearchParams();
+  const redirect = safeRedirect(params.get('redirect'));
+  const { verifyOtp, requestOtp, pendingPhone, isHydrated } = useAuth();
+  const { settings } = useStore();
   const { showToast } = useToast();
 
-  const [otp, setOtp] = useState(['', '', '', '', '', '']);
-  const [timer, setTimer] = useState(30);
-  const [isVerifying, setIsVerifying] = useState(false);
+  const [digits, setDigits] = useState<string[]>(Array(LENGTH).fill(''));
+  const [error, setError] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [timer, setTimer] = useState(RESEND_SECONDS);
+  const inputs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
-    if (timer > 0) {
-      const interval = setInterval(() => setTimer((prev) => prev - 1), 1000);
-      return () => clearInterval(interval);
-    }
+    if (isHydrated && !pendingPhone && !verifying) router.replace(`/login?redirect=${encodeURIComponent(redirect)}`);
+  }, [isHydrated, pendingPhone, verifying, router, redirect]);
+
+  useEffect(() => {
+    if (timer <= 0) return;
+    const t = setTimeout(() => setTimer((s) => s - 1), 1000);
+    return () => clearTimeout(t);
   }, [timer]);
 
-  const handleInputChange = (index: number, val: string) => {
-    if (!/^\d*$/.test(val)) return;
-    const newOtp = [...otp];
-    newOtp[index] = val.slice(-1);
-    setOtp(newOtp);
-
-    // Auto focus next input
-    if (val && index < 5) {
-      const nextInput = document.getElementById(`otp-digit-${index + 1}`);
-      nextInput?.focus();
-    }
-  };
-
-  const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Backspace' && !otp[index] && index > 0) {
-      const prevInput = document.getElementById(`otp-digit-${index - 1}`);
-      prevInput?.focus();
-    }
-  };
-
-  const handleVerify = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const otpValue = otp.join('');
-    if (otpValue.length < 6) {
-      showToast({
-        type: 'error',
-        title: 'Incomplete OTP',
-        message: 'Please enter all 6 digits of your OTP.',
-      });
+  const submit = (code: string) => {
+    if (code.length !== LENGTH || verifying) return;
+    setVerifying(true);
+    const res = verifyOtp(code);
+    if (res.ok) {
+      router.replace(res.isNewUser ? `/profile/setup?redirect=${encodeURIComponent(redirect)}` : redirect);
       return;
     }
+    setVerifying(false);
+    setError(res.error);
+    setDigits(Array(LENGTH).fill(''));
+    inputs.current[0]?.focus();
+  };
 
-    setIsVerifying(true);
-    const isValid = await verifyOtp(otpValue);
-
-    if (isValid) {
-      showToast({
-        type: 'success',
-        title: 'Verification Successful!',
-        message: 'Welcome to your Kirana store.',
-      });
-      router.push(redirect);
-    } else {
-      showToast({
-        type: 'error',
-        title: 'Invalid OTP',
-        message: 'Incorrect OTP. Try 123456.',
-      });
-      setIsVerifying(false);
+  const setAt = (index: number, value: string) => {
+    const clean = value.replace(/\D/g, '');
+    if (!clean) {
+      const next = [...digits];
+      next[index] = '';
+      setDigits(next);
+      return;
     }
+    // Handles typing a digit as well as pasting / SMS autofill of the full code.
+    const next = [...digits];
+    clean
+      .slice(0, LENGTH - index)
+      .split('')
+      .forEach((d, i) => (next[index + i] = d));
+    setDigits(next);
+    setError(null);
+    const focusAt = Math.min(index + clean.length, LENGTH - 1);
+    inputs.current[focusAt]?.focus();
+    if (next.every(Boolean)) submit(next.join(''));
+  };
+
+  const resend = () => {
+    if (!pendingPhone) return;
+    const code = requestOtp(pendingPhone);
+    setTimer(RESEND_SECONDS);
+    setError(null);
+    showToast({
+      type: 'info',
+      title: `Your ${settings.store_name} code is ${code}`,
+      message: 'Test mode: SMS delivery isn’t connected yet.',
+      duration: 12000,
+    });
   };
 
   return (
     <>
-      <div className="text-center space-y-1.5">
-        <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-          Verify Mobile Number
-        </h1>
-        <p className="text-xs text-slate-500 font-medium">
-          Enter 6-digit verification code sent to <strong className="text-slate-900">+91 {phone}</strong>
-        </p>
-        <p className="text-[11px] text-green-700 font-semibold bg-green-50 py-1 rounded-md inline-block px-2">
-          Demo OTP: <strong>123456</strong>
-        </p>
+      <h1 className="text-2xl font-extrabold tracking-tight text-ink">Enter verification code</h1>
+      <p className="mt-2 text-[15px] text-ink-muted">
+        Sent to <span className="font-semibold text-ink">{pendingPhone ? formatPhone(pendingPhone) : '…'}</span>
+      </p>
+
+      <div className="mt-8 flex justify-center gap-2.5" role="group" aria-label="One-time code">
+        {digits.map((d, i) => (
+          <input
+            key={i}
+            ref={(el) => {
+              inputs.current[i] = el;
+            }}
+            value={d}
+            onChange={(e) => setAt(i, e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Backspace' && !digits[i] && i > 0) inputs.current[i - 1]?.focus();
+            }}
+            onFocus={(e) => e.target.select()}
+            inputMode="numeric"
+            autoComplete={i === 0 ? 'one-time-code' : 'off'}
+            autoFocus={i === 0}
+            maxLength={LENGTH}
+            aria-label={`Digit ${i + 1}`}
+            className={`tabular h-14 w-12 rounded-xl border bg-white text-center text-xl font-bold text-ink transition focus:border-leaf-500 focus:outline-none focus:ring-2 focus:ring-leaf-500/15 ${
+              error ? 'border-rose-400' : 'border-line'
+            }`}
+          />
+        ))}
       </div>
 
-      <form onSubmit={handleVerify} className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-2xs space-y-5">
-        {/* 6 Digit Input Group */}
-        <div className="flex justify-between gap-2">
-          {otp.map((digit, idx) => (
-            <input
-              key={idx}
-              id={`otp-digit-${idx}`}
-              type="text"
-              inputMode="numeric"
-              maxLength={1}
-              autoFocus={idx === 0}
-              value={digit}
-              onChange={(e) => handleInputChange(idx, e.target.value)}
-              onKeyDown={(e) => handleKeyDown(idx, e)}
-              className="w-12 h-14 text-center font-black text-lg bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-green-500 transition shadow-inner"
-            />
-          ))}
-        </div>
+      <div className="mt-4 min-h-[20px] text-sm">
+        {verifying ? (
+          <Loader2 className="mx-auto h-5 w-5 animate-spin text-leaf-500" />
+        ) : error ? (
+          <p className="font-medium text-rose-600">{error}</p>
+        ) : null}
+      </div>
 
-        <button
-          type="submit"
-          disabled={isVerifying || otp.join('').length < 6}
-          className="w-full py-3.5 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:opacity-50 text-white font-black text-xs sm:text-sm rounded-2xl shadow-md transition flex items-center justify-center gap-2"
-        >
-          {isVerifying ? 'Verifying Code...' : 'Confirm & Continue'}
-        </button>
-
-        <div className="text-center pt-2">
-          {timer > 0 ? (
-            <span className="text-xs text-slate-400 font-medium">
-              Resend OTP in <strong>{timer}s</strong>
-            </span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setTimer(30)}
-              className="text-xs font-bold text-green-700 hover:underline flex items-center gap-1 mx-auto"
-            >
-              <RotateCw className="w-3 h-3" /> Resend OTP
-            </button>
-          )}
-        </div>
-      </form>
+      <div className="mt-6 text-sm text-ink-muted">
+        {timer > 0 ? (
+          <span>
+            Resend code in <span className="tabular font-semibold text-ink">{timer}s</span>
+          </span>
+        ) : (
+          <button onClick={resend} className="font-semibold text-leaf-600">
+            Resend code
+          </button>
+        )}
+      </div>
     </>
   );
 }
 
 export default function VerifyOtpPage() {
+  const router = useRouter();
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar />
-
-      <main className="max-w-md mx-auto w-full px-4 py-12 flex-1 flex flex-col justify-center space-y-6">
-        <Link href="/login" className="text-xs font-bold text-slate-500 hover:text-slate-800 flex items-center gap-1 self-start">
-          <ArrowLeft className="w-3.5 h-3.5" /> Change Phone Number
-        </Link>
-
-        <Suspense fallback={<div className="bg-white rounded-3xl p-8 text-center text-xs text-slate-400">Loading verification...</div>}>
-          <VerifyOtpForm />
+    <div className="flex min-h-screen flex-col bg-white">
+      <div className="px-2 pt-2">
+        <button onClick={() => router.back()} className="flex h-11 w-11 items-center justify-center rounded-full hover:bg-canvas" aria-label="Change number">
+          <ArrowLeft className="h-5 w-5" />
+        </button>
+      </div>
+      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col px-6 pb-10 pt-6 text-center md:justify-center md:pt-0">
+        <Suspense fallback={null}>
+          <VerifyForm />
         </Suspense>
       </main>
     </div>

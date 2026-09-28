@@ -1,16 +1,29 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Product, Category, StoreSettings, Order, OrderStatus } from '@/types/database';
 import { MOCK_PRODUCTS, MOCK_CATEGORIES, INITIAL_STORE_SETTINGS, MOCK_COUPONS, Coupon } from '@/data/mockInventory';
+import {
+  DEMO_AUDIT_LOGS,
+  DEMO_CUSTOMERS,
+  DEMO_DATA_ENABLED,
+  DEMO_NOTIFICATIONS,
+  DEMO_ORDERS,
+  DEMO_SUPPORT_TICKETS,
+} from '@/data/demoData';
+import { normalizePhone, roundMoney } from '@/lib/format';
+
+export interface TimelineStep {
+  status: OrderStatus;
+  /** ISO timestamp once completed; legacy data may hold free text. */
+  timestamp: string;
+  label: string;
+  completed: boolean;
+}
 
 export interface ExtendedOrder extends Order {
-  timeline: {
-    status: OrderStatus;
-    timestamp: string;
-    label: string;
-    completed: boolean;
-  }[];
+  timeline: TimelineStep[];
+  delivery_slot?: string | null;
 }
 
 export interface AdminCustomer {
@@ -58,8 +71,13 @@ export interface StoreNotification {
   link?: string;
 }
 
+export class OrderError extends Error {}
+
 interface StoreContextType {
+  isHydrated: boolean;
   products: Product[];
+  /** Products visible to customers (active only). */
+  catalog: Product[];
   categories: Category[];
   settings: StoreSettings;
   coupons: Coupon[];
@@ -73,15 +91,17 @@ interface StoreContextType {
   deleteProduct: (id: string) => void;
   updateStock: (productId: string, newStock: number, reason?: string) => void;
   updateSettings: (settings: Partial<StoreSettings>) => void;
+  /** Throws OrderError when stock is insufficient. */
   createOrder: (orderData: Partial<ExtendedOrder>) => ExtendedOrder;
   updateOrderStatus: (orderId: string, newStatus: OrderStatus, notes?: string) => void;
-  cancelOrder: (orderId: string, reason: string) => void;
+  cancelOrder: (orderId: string, reason: string, actor?: string) => void;
   getOrderById: (id: string) => ExtendedOrder | undefined;
   getProductBySlug: (slug: string) => Product | undefined;
   getProductById: (id: string) => Product | undefined;
   addCoupon: (coupon: Coupon) => void;
   deleteCoupon: (id: string) => void;
   getCustomerById: (id: string) => AdminCustomer | undefined;
+  createSupportTicket: (ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'status'>) => SupportTicket;
   updateTicketStatus: (ticketId: string, status: 'open' | 'in_progress' | 'resolved') => void;
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
@@ -90,831 +110,539 @@ interface StoreContextType {
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
 
-const STORE_STATE_STORAGE_KEY = 'kirana_store_state_v2';
+const STORE_STATE_STORAGE_KEY = 'kirana_store_state_v3';
 
-const INITIAL_DEMO_CUSTOMERS: AdminCustomer[] = [
-  {
-    id: 'cust-1',
-    name: 'Rahul Sharma',
-    phone: '+91 98765 43210',
-    email: 'rahul.sharma@example.com',
-    address: 'Flat 402, Block B, Gaur City 2, Ghaziabad',
-    totalOrders: 14,
-    totalSpent: 6840,
-    lastOrderDate: 'Today, 10:30 AM',
-    status: 'active',
-    joinedDate: '12 Jan 2026',
-  },
-  {
-    id: 'cust-2',
-    name: 'Pooja Agarwal',
-    phone: '+91 98112 34567',
-    email: 'pooja.a@gmail.com',
-    address: 'House 14, Sector 4, Vasundhara, Ghaziabad',
-    totalOrders: 8,
-    totalSpent: 3920,
-    lastOrderDate: 'Yesterday, 04:15 PM',
-    status: 'active',
-    joinedDate: '04 Feb 2026',
-  },
-  {
-    id: 'cust-3',
-    name: 'Amitabh Sen',
-    phone: '+91 98223 99881',
-    email: 'amitabh.sen@rediffmail.com',
-    address: 'Tower 3, Apt 1102, Indirapuram, Ghaziabad',
-    totalOrders: 21,
-    totalSpent: 12450,
-    lastOrderDate: '24 Sep 2026',
-    status: 'active',
-    joinedDate: '18 Nov 2025',
-  },
-  {
-    id: 'cust-4',
-    name: 'Meena Gupta',
-    phone: '+91 99100 44221',
-    email: 'meenag@yahoo.co.in',
-    address: 'Shop 2, Raj Nagar Extension, Ghaziabad',
-    totalOrders: 5,
-    totalSpent: 2100,
-    lastOrderDate: '22 Sep 2026',
-    status: 'active',
-    joinedDate: '15 Feb 2026',
-  },
-  {
-    id: 'cust-5',
-    name: 'Vikas Malhotra',
-    phone: '+91 97112 88334',
-    email: null,
-    address: 'Pocket B, Crossing Republik, Ghaziabad',
-    totalOrders: 2,
-    totalSpent: 890,
-    lastOrderDate: '21 Sep 2026',
-    status: 'active',
-    joinedDate: '01 Mar 2026',
-  },
-];
+export const STATUS_FLOW: OrderStatus[] = ['pending', 'confirmed', 'packed', 'out_for_delivery', 'delivered'];
 
-const INITIAL_SUPPORT_TICKETS: SupportTicket[] = [
-  {
-    id: 't-101',
-    customerName: 'Rahul Sharma',
-    customerPhone: '+91 98765 43210',
-    orderNumber: 1025,
-    issueType: 'Missing item in package',
-    description: 'Received 1kg salt instead of Tata Tea pack.',
-    status: 'in_progress',
-    createdAt: 'Today, 11:15 AM',
-  },
-  {
-    id: 't-102',
-    customerName: 'Meena Gupta',
-    customerPhone: '+91 99100 44221',
-    orderNumber: 1022,
-    issueType: 'Payment deducted twice',
-    description: 'UPI transaction showed pending then deducted ₹380 twice.',
-    status: 'open',
-    createdAt: 'Yesterday, 06:40 PM',
-  },
-  {
-    id: 't-103',
-    customerName: 'Pooja Agarwal',
-    customerPhone: '+91 98112 34567',
-    orderNumber: 1020,
-    issueType: 'Packaging damaged',
-    description: 'Ghee tin had a small dent on corner. Replaced on doorstep.',
-    status: 'resolved',
-    createdAt: '23 Sep 2026',
-  },
-];
+const uid = (prefix: string) =>
+  `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-const INITIAL_AUDIT_LOGS: AuditLogItem[] = [
-  {
-    id: 'aud-1',
-    actor: 'Store Owner',
-    action: 'Stock Adjustment',
-    entity: 'Aashirvaad Atta 5kg',
-    oldValue: '32',
-    newValue: '42',
-    timestamp: 'Today, 09:15 AM',
-    reason: 'Received supplier delivery crate',
-  },
-  {
-    id: 'aud-2',
-    actor: 'Counter Staff',
-    action: 'POS Sale Out',
-    entity: 'Tata Salt 1kg',
-    oldValue: '116',
-    newValue: '115',
-    timestamp: 'Today, 10:02 AM',
-    reason: 'Cash Counter bill #POS-1002',
-  },
-  {
-    id: 'aud-3',
-    actor: 'Store Owner',
-    action: 'Price Update',
-    entity: 'Amul Desi Ghee 1L',
-    oldValue: '₹620',
-    newValue: '₹610',
-    timestamp: 'Yesterday, 07:30 PM',
-    reason: 'Seasonal festival promotion discount',
-  },
-  {
-    id: 'aud-4',
-    actor: 'System',
-    action: 'Order Placed Deduct',
-    entity: 'MDH Deggi Mirch 100g',
-    oldValue: '61',
-    newValue: '60',
-    timestamp: 'Today, 10:30 AM',
-    reason: 'Customer online order #1025',
-  },
-];
+interface PersistedState {
+  products: Product[];
+  categories: Category[];
+  settings: StoreSettings;
+  coupons: Coupon[];
+  orders: ExtendedOrder[];
+  supportTickets: SupportTicket[];
+  auditLogs: AuditLogItem[];
+  notifications: StoreNotification[];
+}
 
-const INITIAL_NOTIFICATIONS: StoreNotification[] = [
-  {
-    id: 'notif-1',
-    title: 'New Online Order #1026',
-    message: 'Rahul Sharma placed an order for ₹582 via UPI.',
-    type: 'order',
-    timestamp: '2 mins ago',
-    read: false,
-    link: '/admin/orders/ord-1026',
-  },
-  {
-    id: 'notif-2',
-    title: 'Low Stock Alert',
-    message: 'Rajdhani Sooji and Kabuli Chana are below threshold alert limit.',
-    type: 'stock',
-    timestamp: '15 mins ago',
-    read: false,
-    link: '/admin/inventory',
-  },
-  {
-    id: 'notif-3',
-    title: 'Support Ticket #t-101 Logged',
-    message: 'Rahul Sharma submitted a missing item query on Order #1025.',
-    type: 'support',
-    timestamp: '1 hour ago',
-    read: false,
-    link: '/admin/support',
-  },
-];
+const initialState = (): PersistedState => ({
+  products: MOCK_PRODUCTS,
+  categories: MOCK_CATEGORIES,
+  settings: INITIAL_STORE_SETTINGS,
+  coupons: MOCK_COUPONS,
+  orders: DEMO_DATA_ENABLED ? DEMO_ORDERS : [],
+  supportTickets: DEMO_DATA_ENABLED ? DEMO_SUPPORT_TICKETS : [],
+  auditLogs: DEMO_DATA_ENABLED ? DEMO_AUDIT_LOGS : [],
+  notifications: DEMO_DATA_ENABLED ? DEMO_NOTIFICATIONS : [],
+});
 
-const INITIAL_DEMO_ORDERS: ExtendedOrder[] = [
-  {
-    id: 'ord-1026',
-    order_number: 1026,
-    user_id: 'cust-1',
-    order_type: 'online_delivery',
-    status: 'pending',
-    subtotal: 582,
-    delivery_charge: 0,
-    discount_amount: 50,
-    total_amount: 532,
-    payment_method: 'upi',
-    payment_status: 'paid',
-    payment_transaction_id: 'UPI-9923812391',
-    shipping_name: 'Rahul Sharma',
-    shipping_phone: '+91 98765 43210',
-    shipping_address: 'Flat 402, Block B, Gaur City 2',
-    shipping_city: 'Ghaziabad',
-    shipping_pincode: '201009',
-    notes: 'Please do not ring bell if baby is sleeping.',
-    cancelled_reason: null,
-    created_at: new Date(Date.now() - 300000).toISOString(), // 5 mins ago
-    updated_at: new Date().toISOString(),
-    items: [
-      {
-        id: 'oi-7',
-        order_id: 'ord-1026',
-        product_id: 'p-1',
-        product_name: 'Aashirvaad Shudh Chakki Whole Wheat Atta 5kg',
-        quantity: 1,
-        unit_price: 249,
-        total_price: 249,
-        created_at: '',
-      },
-      {
-        id: 'oi-8',
-        order_id: 'ord-1026',
-        product_id: 'p-11',
-        product_name: 'Amul Pure Desi Ghee Tin 1L',
-        quantity: 1,
-        unit_price: 610,
-        total_price: 610,
-        created_at: '',
-      },
-    ],
-    timeline: [
-      { status: 'pending', timestamp: '5 mins ago', label: 'Order Placed', completed: true },
-      { status: 'confirmed', timestamp: 'Waiting', label: 'Confirmed by Kirana Store', completed: false },
-      { status: 'packed', timestamp: 'Waiting', label: 'Items Packed & Billed', completed: false },
-      { status: 'out_for_delivery', timestamp: 'Pending', label: 'Out for Quick Delivery', completed: false },
-      { status: 'delivered', timestamp: 'Estimated 25m', label: 'Delivery at Doorstep', completed: false },
-    ],
-  },
-  {
-    id: 'ord-1025',
-    order_number: 1025,
-    user_id: 'cust-2',
-    order_type: 'online_delivery',
-    status: 'packed',
-    subtotal: 395,
-    delivery_charge: 25,
-    discount_amount: 0,
-    total_amount: 420,
-    payment_method: 'cod',
-    payment_status: 'pending',
-    payment_transaction_id: null,
-    shipping_name: 'Pooja Agarwal',
-    shipping_phone: '+91 98112 34567',
-    shipping_address: 'House 14, Sector 4, Vasundhara',
-    shipping_city: 'Ghaziabad',
-    shipping_pincode: '201012',
-    notes: 'Call on reaching the gate.',
-    cancelled_reason: null,
-    created_at: new Date(Date.now() - 1800000).toISOString(), // 30 mins ago
-    updated_at: new Date(Date.now() - 600000).toISOString(),
-    items: [
-      {
-        id: 'oi-4',
-        order_id: 'ord-1025',
-        product_id: 'p-10',
-        product_name: 'Fortune Kachi Ghani Pure Mustard Oil 1L',
-        quantity: 1,
-        unit_price: 142,
-        total_price: 142,
-        created_at: '',
-      },
-      {
-        id: 'oi-5',
-        order_id: 'ord-1025',
-        product_id: 'p-7',
-        product_name: 'Tata Sampann Unpolished Toor Dal 1kg',
-        quantity: 1,
-        unit_price: 172,
-        total_price: 172,
-        created_at: '',
-      },
-      {
-        id: 'oi-6',
-        order_id: 'ord-1025',
-        product_id: 'p-19',
-        product_name: 'Parle-G Gluco Biscuits Family Pack 800g',
-        quantity: 1,
-        unit_price: 79,
-        total_price: 79,
-        created_at: '',
-      },
-    ],
-    timeline: [
-      { status: 'pending', timestamp: 'Today, 30 mins ago', label: 'Order Placed', completed: true },
-      { status: 'confirmed', timestamp: 'Today, 25 mins ago', label: 'Confirmed by Kirana Store', completed: true },
-      { status: 'packed', timestamp: 'Today, 10 mins ago', label: 'Items Packed & Billed', completed: true },
-      { status: 'out_for_delivery', timestamp: 'Pending', label: 'Out for Quick Delivery', completed: false },
-      { status: 'delivered', timestamp: 'Estimated in 12 mins', label: 'Delivery at Doorstep', completed: false },
-    ],
-  },
-  {
-    id: 'ord-1024',
-    order_number: 1024,
-    user_id: 'cust-1',
-    order_type: 'online_delivery',
-    status: 'delivered',
-    subtotal: 513,
-    delivery_charge: 0,
-    discount_amount: 50,
-    total_amount: 463,
-    payment_method: 'upi',
-    payment_status: 'paid',
-    payment_transaction_id: 'UPI-9823482394',
-    shipping_name: 'Rahul Sharma',
-    shipping_phone: '+91 98765 43210',
-    shipping_address: 'Flat 402, Block B, Gaur City 2, Sector 16C',
-    shipping_city: 'Ghaziabad',
-    shipping_pincode: '201009',
-    notes: 'Please leave parcel at the front door.',
-    cancelled_reason: null,
-    created_at: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
-    updated_at: new Date(Date.now() - 84000000).toISOString(),
-    items: [
-      {
-        id: 'oi-1',
-        order_id: 'ord-1024',
-        product_id: 'p-1',
-        product_name: 'Aashirvaad Shudh Chakki Whole Wheat Atta 5kg',
-        quantity: 1,
-        unit_price: 249,
-        total_price: 249,
-        created_at: '',
-      },
-      {
-        id: 'oi-2',
-        order_id: 'ord-1024',
-        product_id: 'p-15',
-        product_name: 'Tata Salt Vacuum Evaporated 1kg',
-        quantity: 1,
-        unit_price: 26,
-        total_price: 26,
-        created_at: '',
-      },
-      {
-        id: 'oi-3',
-        order_id: 'ord-1024',
-        product_id: 'p-21',
-        product_name: 'Tata Tea Premium Desh Ki Chai 500g',
-        quantity: 1,
-        unit_price: 224,
-        total_price: 224,
-        created_at: '',
-      },
-    ],
-    timeline: [
-      { status: 'pending', timestamp: 'Yesterday, 10:30 AM', label: 'Order Placed', completed: true },
-      { status: 'confirmed', timestamp: 'Yesterday, 10:32 AM', label: 'Confirmed by Kirana Store', completed: true },
-      { status: 'packed', timestamp: 'Yesterday, 10:40 AM', label: 'Items Packed & Checked', completed: true },
-      { status: 'out_for_delivery', timestamp: 'Yesterday, 10:48 AM', label: 'Out for Quick Delivery', completed: true },
-      { status: 'delivered', timestamp: 'Yesterday, 11:05 AM', label: 'Delivered at Doorstep', completed: true },
-    ],
-  },
-  {
-    id: 'ord-1023',
-    order_number: 1023,
-    user_id: 'cust-3',
-    order_type: 'pos_counter',
-    status: 'delivered',
-    subtotal: 654,
-    delivery_charge: 0,
-    discount_amount: 0,
-    total_amount: 654,
-    payment_method: 'cash_pos',
-    payment_status: 'paid',
-    payment_transaction_id: 'POS-CASH-1023',
-    shipping_name: 'Walk-in Counter Customer',
-    shipping_phone: 'Counter',
-    shipping_address: 'Direct Counter Sale',
-    shipping_city: 'Ghaziabad',
-    shipping_pincode: '201001',
-    notes: 'Walk-in direct receipt',
-    cancelled_reason: null,
-    created_at: new Date(Date.now() - 172800000).toISOString(),
-    updated_at: new Date(Date.now() - 172800000).toISOString(),
-    items: [
-      {
-        id: 'oi-9',
-        order_id: 'ord-1023',
-        product_id: 'p-4',
-        product_name: 'Fortune Everyday Basmati Rice 1kg',
-        quantity: 2,
-        unit_price: 94,
-        total_price: 188,
-        created_at: '',
-      },
-      {
-        id: 'oi-10',
-        order_id: 'ord-1023',
-        product_id: 'p-27',
-        product_name: 'Happilo California Almonds 500g',
-        quantity: 1,
-        unit_price: 439,
-        total_price: 439,
-        created_at: '',
-      },
-      {
-        id: 'oi-11',
-        order_id: 'ord-1023',
-        product_id: 'p-15',
-        product_name: 'Tata Salt Vacuum Evaporated 1kg',
-        quantity: 1,
-        unit_price: 26,
-        total_price: 26,
-        created_at: '',
-      },
-    ],
-    timeline: [
-      { status: 'delivered', timestamp: '2 days ago', label: 'Billed and Handed to Customer', completed: true },
-    ],
-  },
-  {
-    id: 'ord-1022',
-    order_number: 1022,
-    user_id: 'cust-4',
-    order_type: 'online_delivery',
-    status: 'cancelled',
-    subtotal: 380,
-    delivery_charge: 25,
-    discount_amount: 0,
-    total_amount: 405,
-    payment_method: 'cod',
-    payment_status: 'failed',
-    payment_transaction_id: null,
-    shipping_name: 'Meena Gupta',
-    shipping_phone: '+91 99100 44221',
-    shipping_address: 'Shop 2, Raj Nagar Extension',
-    shipping_city: 'Ghaziabad',
-    shipping_pincode: '201017',
-    notes: 'Customer canceled due to delayed arrival.',
-    cancelled_reason: 'Delivery delayed beyond estimated slot',
-    created_at: new Date(Date.now() - 259200000).toISOString(),
-    updated_at: new Date(Date.now() - 250000000).toISOString(),
-    items: [
-      {
-        id: 'oi-12',
-        order_id: 'ord-1022',
-        product_id: 'p-10',
-        product_name: 'Fortune Kachi Ghani Pure Mustard Oil 1L',
-        quantity: 1,
-        unit_price: 142,
-        total_price: 142,
-        created_at: '',
-      },
-      {
-        id: 'oi-13',
-        order_id: 'ord-1022',
-        product_id: 'p-21',
-        product_name: 'Tata Tea Premium Desh Ki Chai 500g',
-        quantity: 1,
-        unit_price: 224,
-        total_price: 224,
-        created_at: '',
-      },
-    ],
-    timeline: [
-      { status: 'pending', timestamp: '3 days ago', label: 'Order Placed', completed: true },
-      { status: 'cancelled', timestamp: '3 days ago', label: 'Order Cancelled', completed: true },
-    ],
-  },
-];
+function readPersisted(): Partial<PersistedState> | null {
+  try {
+    const raw = localStorage.getItem(STORE_STATE_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Partial<PersistedState>) : null;
+  } catch {
+    return null;
+  }
+}
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
-  const [products, setProducts] = useState<Product[]>(MOCK_PRODUCTS);
-  const [categories, setCategories] = useState<Category[]>(MOCK_CATEGORIES);
-  const [settings, setSettings] = useState<StoreSettings>(INITIAL_STORE_SETTINGS);
-  const [coupons, setCoupons] = useState<Coupon[]>(MOCK_COUPONS);
-  const [orders, setOrders] = useState<ExtendedOrder[]>(INITIAL_DEMO_ORDERS);
-  const [customers, setCustomers] = useState<AdminCustomer[]>(INITIAL_DEMO_CUSTOMERS);
-  const [supportTickets, setSupportTickets] = useState<SupportTicket[]>(INITIAL_SUPPORT_TICKETS);
-  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
-  const [notifications, setNotifications] = useState<StoreNotification[]>(INITIAL_NOTIFICATIONS);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [state, setState] = useState<PersistedState>(initialState);
+  const [isHydrated, setIsHydrated] = useState(false);
+  // Skip writing back a state we just received from another tab.
+  const skipNextWrite = useRef(false);
 
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORE_STATE_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed.products?.length) setProducts(parsed.products);
-        if (parsed.settings) setSettings(parsed.settings);
-        if (parsed.orders?.length) setOrders(parsed.orders);
-        if (parsed.coupons?.length) setCoupons(parsed.coupons);
-        if (parsed.customers?.length) setCustomers(parsed.customers);
-        if (parsed.supportTickets?.length) setSupportTickets(parsed.supportTickets);
-        if (parsed.auditLogs?.length) setAuditLogs(parsed.auditLogs);
-        if (parsed.notifications?.length) setNotifications(parsed.notifications);
-      }
-    } catch (e) {
-      console.error('Failed to load store state', e);
-    }
-    setIsLoaded(true);
+  const applyPersisted = useCallback((parsed: Partial<PersistedState> | null) => {
+    if (!parsed) return;
+    setState((prev) => ({
+      products: parsed.products ?? prev.products,
+      categories: parsed.categories?.length ? parsed.categories : prev.categories,
+      settings: parsed.settings ? { ...prev.settings, ...parsed.settings } : prev.settings,
+      coupons: parsed.coupons ?? prev.coupons,
+      orders: parsed.orders ?? prev.orders,
+      supportTickets: parsed.supportTickets ?? prev.supportTickets,
+      auditLogs: parsed.auditLogs ?? prev.auditLogs,
+      notifications: parsed.notifications ?? prev.notifications,
+    }));
   }, []);
 
   useEffect(() => {
-    if (isLoaded) {
+    applyPersisted(readPersisted());
+    setIsHydrated(true);
+
+    // Keep the storefront and owner dashboard in sync across open tabs.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORE_STATE_STORAGE_KEY || !e.newValue) return;
       try {
-        localStorage.setItem(
-          STORE_STATE_STORAGE_KEY,
-          JSON.stringify({
-            products,
-            settings,
-            orders,
-            coupons,
-            customers,
-            supportTickets,
-            auditLogs,
-            notifications,
-          })
-        );
-      } catch (e) {
-        console.error('Failed to save store state', e);
+        skipNextWrite.current = true;
+        applyPersisted(JSON.parse(e.newValue));
+      } catch {
+        skipNextWrite.current = false;
       }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [applyPersisted]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (skipNextWrite.current) {
+      skipNextWrite.current = false;
+      return;
     }
-  }, [products, settings, orders, coupons, customers, supportTickets, auditLogs, notifications, isLoaded]);
+    try {
+      localStorage.setItem(STORE_STATE_STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      console.error('Failed to save store state', e);
+    }
+  }, [state, isHydrated]);
+
+  const { products, categories, settings, coupons, orders, supportTickets, auditLogs, notifications } = state;
+
+  const makeAudit = (log: Omit<AuditLogItem, 'id' | 'timestamp'>): AuditLogItem => ({
+    ...log,
+    id: uid('aud'),
+    timestamp: new Date().toISOString(),
+  });
+
+  const makeNotification = (n: Omit<StoreNotification, 'id' | 'timestamp' | 'read'>): StoreNotification => ({
+    ...n,
+    id: uid('notif'),
+    timestamp: new Date().toISOString(),
+    read: false,
+  });
+
+  const pushAudit = (logs: AuditLogItem[]) => (prev: AuditLogItem[]) => [...logs, ...prev].slice(0, 500);
 
   const addAuditLog = (log: Omit<AuditLogItem, 'id' | 'timestamp'>) => {
-    const newLog: AuditLogItem = {
-      ...log,
-      id: `aud-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-    setAuditLogs((prev) => [newLog, ...prev.slice(0, 49)]);
+    const entry = makeAudit(log);
+    setState((s) => ({ ...s, auditLogs: pushAudit([entry])(s.auditLogs) }));
   };
+
+  const lowStockNotification = (p: Product, qty: number) =>
+    qty <= p.min_stock_alert
+      ? makeNotification({
+          title: qty === 0 ? 'Out of stock' : 'Low stock',
+          message: qty === 0 ? `${p.name} is out of stock.` : `${p.name} has only ${qty} left.`,
+          type: 'stock',
+          link: '/admin/inventory',
+        })
+      : null;
 
   const updateProduct = (updated: Product) => {
     const existing = products.find((p) => p.id === updated.id);
+    const logs: AuditLogItem[] = [];
     if (existing && existing.selling_price !== updated.selling_price) {
-      addAuditLog({
-        actor: 'Store Owner',
-        action: 'Price Changed',
-        entity: updated.name,
-        oldValue: `₹${existing.selling_price}`,
-        newValue: `₹${updated.selling_price}`,
-        reason: 'Manual price adjustment',
-      });
+      logs.push(
+        makeAudit({
+          actor: 'Store Owner',
+          action: 'Price changed',
+          entity: updated.name,
+          oldValue: `₹${existing.selling_price}`,
+          newValue: `₹${updated.selling_price}`,
+        })
+      );
     }
-    setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    if (existing && existing.stock_quantity !== updated.stock_quantity) {
+      logs.push(
+        makeAudit({
+          actor: 'Store Owner',
+          action: 'Stock adjusted',
+          entity: updated.name,
+          oldValue: String(existing.stock_quantity),
+          newValue: String(updated.stock_quantity),
+          reason: 'Product edit',
+        })
+      );
+    }
+    const stamped = { ...updated, updated_at: new Date().toISOString() };
+    setState((s) => ({
+      ...s,
+      products: s.products.map((p) => (p.id === updated.id ? stamped : p)),
+      auditLogs: pushAudit(logs)(s.auditLogs),
+    }));
   };
 
   const addProduct = (product: Omit<Product, 'id' | 'created_at' | 'updated_at'>) => {
-    const id = `p-${Date.now()}`;
-    const newProduct: Product = {
-      ...product,
-      id,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    setProducts((prev) => [newProduct, ...prev]);
-    addAuditLog({
+    const now = new Date().toISOString();
+    const newProduct: Product = { ...product, id: uid('p'), created_at: now, updated_at: now };
+    const log = makeAudit({
       actor: 'Store Owner',
-      action: 'Product Added',
+      action: 'Product added',
       entity: newProduct.name,
-      newValue: `MRP ₹${newProduct.mrp}, Stock ${newProduct.stock_quantity}`,
-      reason: 'New catalog entry',
+      newValue: `MRP ₹${newProduct.mrp}, stock ${newProduct.stock_quantity}`,
     });
+    setState((s) => ({
+      ...s,
+      products: [newProduct, ...s.products],
+      auditLogs: pushAudit([log])(s.auditLogs),
+    }));
   };
 
   const deleteProduct = (id: string) => {
     const p = products.find((x) => x.id === id);
-    setProducts((prev) => prev.filter((item) => item.id !== id));
-    if (p) {
-      addAuditLog({
-        actor: 'Store Owner',
-        action: 'Product Archived',
-        entity: p.name,
-        reason: 'Item deleted from catalog',
-      });
-    }
+    if (!p) return;
+    const log = makeAudit({ actor: 'Store Owner', action: 'Product removed', entity: p.name });
+    setState((s) => ({
+      ...s,
+      products: s.products.filter((item) => item.id !== id),
+      auditLogs: pushAudit([log])(s.auditLogs),
+    }));
   };
 
-  const updateStock = (productId: string, newStock: number, reason: string = 'Stock Adjustment') => {
-    const currentProd = products.find((p) => p.id === productId);
-    const oldQty = currentProd ? currentProd.stock_quantity : 0;
-    const finalQty = Math.max(0, newStock);
-
-    setProducts((prev) =>
-      prev.map((p) => (p.id === productId ? { ...p, stock_quantity: finalQty } : p))
-    );
-
-    if (currentProd) {
-      addAuditLog({
-        actor: 'Store Owner',
-        action: 'Stock Ledger Adjustment',
-        entity: currentProd.name,
-        oldValue: String(oldQty),
-        newValue: String(finalQty),
-        reason,
-      });
-
-      if (finalQty <= currentProd.min_stock_alert && finalQty > 0) {
-        setNotifications((prev) => [
-          {
-            id: `notif-${Date.now()}`,
-            title: 'Low Stock Alert',
-            message: `${currentProd.name} is low on stock (${finalQty} units left).`,
-            type: 'stock',
-            timestamp: 'Just now',
-            read: false,
-            link: '/admin/inventory',
-          },
-          ...prev,
-        ]);
-      }
-    }
+  const updateStock = (productId: string, newStock: number, reason: string = 'Stock adjustment') => {
+    const current = products.find((p) => p.id === productId);
+    if (!current) return;
+    const finalQty = Math.max(0, Math.floor(newStock));
+    const log = makeAudit({
+      actor: 'Store Owner',
+      action: 'Stock adjusted',
+      entity: current.name,
+      oldValue: String(current.stock_quantity),
+      newValue: String(finalQty),
+      reason,
+    });
+    const notif = finalQty < current.stock_quantity ? lowStockNotification(current, finalQty) : null;
+    setState((s) => ({
+      ...s,
+      products: s.products.map((p) =>
+        p.id === productId ? { ...p, stock_quantity: finalQty, updated_at: new Date().toISOString() } : p
+      ),
+      auditLogs: pushAudit([log])(s.auditLogs),
+      notifications: notif ? [notif, ...s.notifications] : s.notifications,
+    }));
   };
 
   const updateSettings = (updated: Partial<StoreSettings>) => {
-    setSettings((prev) => ({ ...prev, ...updated, updated_at: new Date().toISOString() }));
-    addAuditLog({
+    const log = makeAudit({
       actor: 'Store Owner',
-      action: 'Store Settings Modified',
-      entity: 'Store Operational Rules',
-      reason: 'Delivery charges or timings updated',
+      action: 'Settings updated',
+      entity: 'Store settings',
+      newValue: Object.keys(updated).join(', '),
     });
+    setState((s) => ({
+      ...s,
+      settings: { ...s.settings, ...updated, updated_at: new Date().toISOString() },
+      auditLogs: pushAudit([log])(s.auditLogs),
+    }));
   };
 
   const createOrder = (orderData: Partial<ExtendedOrder>): ExtendedOrder => {
-    const orderNumber = 1000 + orders.length + 1;
+    const items = orderData.items || [];
+    if (items.length === 0) throw new OrderError('Your basket is empty.');
+
+    // Validate stock against the latest catalogue before committing anything.
+    for (const item of items) {
+      const p = products.find((x) => x.id === item.product_id);
+      if (!p || !p.is_active) throw new OrderError(`${item.product_name} is no longer available.`);
+      if (p.stock_quantity < item.quantity) {
+        throw new OrderError(
+          p.stock_quantity === 0
+            ? `${p.name} just went out of stock.`
+            : `Only ${p.stock_quantity} of ${p.name} left. Please update your basket.`
+        );
+      }
+    }
+
+    const orderNumber = orders.reduce((max, o) => Math.max(max, o.order_number), 1000) + 1;
     const orderId = `ord-${orderNumber}`;
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const now = new Date().toISOString();
+    const isPos = orderData.order_type === 'pos_counter';
 
     const newOrder: ExtendedOrder = {
       id: orderId,
       order_number: orderNumber,
-      user_id: orderData.user_id || 'guest',
+      user_id: orderData.user_id || null,
       order_type: orderData.order_type || 'online_delivery',
       status: orderData.status || 'pending',
-      subtotal: orderData.subtotal || 0,
-      delivery_charge: orderData.delivery_charge || 0,
-      discount_amount: orderData.discount_amount || 0,
-      total_amount: orderData.total_amount || 0,
+      subtotal: roundMoney(orderData.subtotal || 0),
+      delivery_charge: roundMoney(orderData.delivery_charge || 0),
+      discount_amount: roundMoney(orderData.discount_amount || 0),
+      total_amount: roundMoney(orderData.total_amount || 0),
       payment_method: orderData.payment_method || 'cod',
-      payment_status: orderData.payment_status || (orderData.payment_method === 'cod' ? 'pending' : 'paid'),
-      payment_transaction_id: orderData.payment_transaction_id || (orderData.payment_method !== 'cod' ? `TXN-${Date.now()}` : null),
-      shipping_name: orderData.shipping_name || 'Customer',
-      shipping_phone: orderData.shipping_phone || '',
-      shipping_address: orderData.shipping_address || '',
-      shipping_city: orderData.shipping_city || 'Ghaziabad',
-      shipping_pincode: orderData.shipping_pincode || '201001',
+      payment_status: orderData.payment_status || 'pending',
+      payment_transaction_id: orderData.payment_transaction_id || null,
+      shipping_name: orderData.shipping_name || null,
+      shipping_phone: orderData.shipping_phone || null,
+      shipping_address: orderData.shipping_address || null,
+      shipping_city: orderData.shipping_city || null,
+      shipping_pincode: orderData.shipping_pincode || null,
       notes: orderData.notes || null,
+      delivery_slot: orderData.delivery_slot || null,
       cancelled_reason: null,
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
-      items: orderData.items || [],
-      timeline: [
-        { status: 'pending', timestamp: `${timeStr}`, label: 'Order Placed', completed: true },
-        { status: 'confirmed', timestamp: 'Pending confirmation', label: 'Store Confirmation', completed: false },
-        { status: 'packed', timestamp: 'Pending', label: 'Packing Items', completed: false },
-        { status: 'out_for_delivery', timestamp: 'Pending', label: 'Out for Quick Delivery', completed: false },
-        { status: 'delivered', timestamp: 'Estimated 25-35 mins', label: 'Delivery at Doorstep', completed: false },
-      ],
+      created_at: now,
+      updated_at: now,
+      items: items.map((i) => ({ ...i, order_id: orderId })),
+      timeline: isPos
+        ? [{ status: 'delivered', timestamp: now, label: 'Billed at counter', completed: true }]
+        : [
+            { status: 'pending', timestamp: now, label: 'Order placed', completed: true },
+            { status: 'confirmed', timestamp: '', label: 'Confirmed by store', completed: false },
+            { status: 'packed', timestamp: '', label: 'Packed', completed: false },
+            { status: 'out_for_delivery', timestamp: '', label: 'Out for delivery', completed: false },
+            { status: 'delivered', timestamp: '', label: 'Delivered', completed: false },
+          ],
     };
 
-    // Deduct inventory quantities automatically
-    if (newOrder.items?.length) {
-      setProducts((prev) =>
-        prev.map((p) => {
-          const item = newOrder.items?.find((i) => i.product_id === p.id);
-          if (item) {
-            return { ...p, stock_quantity: Math.max(0, p.stock_quantity - item.quantity) };
-          }
-          return p;
-        })
-      );
+    const stockNotifs: StoreNotification[] = [];
+    for (const item of items) {
+      const p = products.find((x) => x.id === item.product_id);
+      if (p) {
+        const n = lowStockNotification(p, p.stock_quantity - item.quantity);
+        if (n && p.stock_quantity > p.min_stock_alert) stockNotifs.push(n);
+      }
     }
 
-    setOrders((prev) => [newOrder, ...prev]);
+    const orderNotif = isPos
+      ? null
+      : makeNotification({
+          title: `New order #${orderNumber}`,
+          message: `${newOrder.shipping_name || 'Customer'} placed an order for ₹${newOrder.total_amount}.`,
+          type: 'order',
+          link: `/admin/orders/${orderId}`,
+        });
 
-    // Push notification to Admin
-    setNotifications((prev) => [
-      {
-        id: `notif-${Date.now()}`,
-        title: `New Order #${newOrder.order_number}`,
-        message: `${newOrder.shipping_name} placed an order for ₹${newOrder.total_amount} (${newOrder.payment_method.toUpperCase()}).`,
-        type: 'order',
-        timestamp: 'Just now',
-        read: false,
-        link: `/admin/orders/${newOrder.id}`,
-      },
-      ...prev,
-    ]);
-
-    addAuditLog({
-      actor: 'System',
-      action: 'Order Created',
-      entity: `Order #${newOrder.order_number}`,
-      newValue: `₹${newOrder.total_amount} via ${newOrder.payment_method}`,
-      reason: newOrder.order_type,
+    const log = makeAudit({
+      actor: isPos ? 'Counter' : 'Customer',
+      action: isPos ? 'Counter sale' : 'Order placed',
+      entity: `Order #${orderNumber}`,
+      newValue: `₹${newOrder.total_amount} · ${newOrder.payment_method}`,
     });
+
+    setState((s) => ({
+      ...s,
+      products: s.products.map((p) => {
+        const item = items.find((i) => i.product_id === p.id);
+        return item ? { ...p, stock_quantity: Math.max(0, p.stock_quantity - item.quantity) } : p;
+      }),
+      orders: [newOrder, ...s.orders],
+      notifications: [...(orderNotif ? [orderNotif] : []), ...stockNotifs, ...s.notifications].slice(0, 200),
+      auditLogs: pushAudit([log])(s.auditLogs),
+    }));
 
     return newOrder;
   };
 
   const updateOrderStatus = (orderId: string, newStatus: OrderStatus, notes?: string) => {
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const ord = orders.find((o) => o.id === orderId);
+    if (!ord || ord.status === newStatus) return;
+    if (ord.status === 'cancelled' || ord.status === 'delivered') return;
+    if (newStatus === 'cancelled') {
+      cancelOrder(orderId, notes || 'Cancelled by store');
+      return;
+    }
+    const targetIndex = STATUS_FLOW.indexOf(newStatus);
+    // Orders only move forward through the fulfilment flow.
+    if (targetIndex === -1 || targetIndex <= STATUS_FLOW.indexOf(ord.status)) return;
 
-    setOrders((prev) =>
-      prev.map((ord) => {
-        if (ord.id !== orderId) return ord;
+    const now = new Date().toISOString();
+    const timeline = ord.timeline.map((step) => {
+      const idx = STATUS_FLOW.indexOf(step.status);
+      if (idx !== -1 && idx <= targetIndex && !step.completed) {
+        return { ...step, completed: true, timestamp: now };
+      }
+      return step;
+    });
 
-        const updatedTimeline = ord.timeline.map((step) => {
-          if (step.status === newStatus) {
-            return { ...step, completed: true, timestamp: timeStr };
-          }
-          const statusOrder: OrderStatus[] = ['pending', 'confirmed', 'packed', 'out_for_delivery', 'delivered'];
-          const currentIndex = statusOrder.indexOf(newStatus);
-          const stepIndex = statusOrder.indexOf(step.status);
-          if (stepIndex <= currentIndex && stepIndex !== -1) {
-            return { ...step, completed: true, timestamp: step.completed ? step.timestamp : timeStr };
-          }
-          return step;
-        });
+    const log = makeAudit({
+      actor: 'Store Owner',
+      action: 'Order status changed',
+      entity: `Order #${ord.order_number}`,
+      oldValue: ord.status,
+      newValue: newStatus,
+      reason: notes,
+    });
 
-        addAuditLog({
-          actor: 'Store Owner',
-          action: 'Order Status Changed',
-          entity: `Order #${ord.order_number}`,
-          oldValue: ord.status,
-          newValue: newStatus,
-          reason: notes || 'Standard order processing',
-        });
-
-        return {
-          ...ord,
-          status: newStatus,
-          notes: notes ? (ord.notes ? `${ord.notes} | ${notes}` : notes) : ord.notes,
-          updated_at: now.toISOString(),
-          payment_status: newStatus === 'delivered' ? 'paid' : ord.payment_status,
-          timeline: updatedTimeline,
-        };
-      })
-    );
+    setState((s) => ({
+      ...s,
+      orders: s.orders.map((o) =>
+        o.id !== orderId
+          ? o
+          : {
+              ...o,
+              status: newStatus,
+              notes: notes ? (o.notes ? `${o.notes} | ${notes}` : notes) : o.notes,
+              updated_at: now,
+              // Cash / UPI is collected by the rider at the door.
+              payment_status: newStatus === 'delivered' && o.payment_status === 'pending' ? 'paid' : o.payment_status,
+              timeline,
+            }
+      ),
+      auditLogs: pushAudit([log])(s.auditLogs),
+    }));
   };
 
-  const cancelOrder = (orderId: string, reason: string) => {
-    setOrders((prev) =>
-      prev.map((ord) => {
-        if (ord.id !== orderId) return ord;
+  const cancelOrder = (orderId: string, reason: string, actor: string = 'Store Owner') => {
+    const ord = orders.find((o) => o.id === orderId);
+    if (!ord || ord.status === 'cancelled' || ord.status === 'delivered') return;
 
-        // Restock products back into inventory
-        if (ord.items?.length) {
-          ord.items.forEach((item) => {
-            if (item.product_id) {
-              const prod = products.find((p) => p.id === item.product_id);
-              if (prod) {
-                updateStock(prod.id, prod.stock_quantity + item.quantity, `Order #${ord.order_number} cancelled restock`);
-              }
+    const now = new Date().toISOString();
+    const restock = new Map<string, number>();
+    ord.items?.forEach((i) => {
+      if (i.product_id) restock.set(i.product_id, (restock.get(i.product_id) || 0) + i.quantity);
+    });
+
+    const log = makeAudit({
+      actor,
+      action: 'Order cancelled',
+      entity: `Order #${ord.order_number}`,
+      oldValue: ord.status,
+      newValue: 'cancelled',
+      reason,
+    });
+    const notif =
+      actor === 'Customer'
+        ? makeNotification({
+            title: `Order #${ord.order_number} cancelled`,
+            message: `Cancelled by customer: ${reason}`,
+            type: 'order',
+            link: `/admin/orders/${ord.id}`,
+          })
+        : null;
+
+    setState((s) => ({
+      ...s,
+      products: s.products.map((p) =>
+        restock.has(p.id) ? { ...p, stock_quantity: p.stock_quantity + (restock.get(p.id) || 0) } : p
+      ),
+      orders: s.orders.map((o) =>
+        o.id !== orderId
+          ? o
+          : {
+              ...o,
+              status: 'cancelled',
+              cancelled_reason: reason,
+              payment_status: o.payment_status === 'paid' ? 'refunded' : o.payment_status,
+              updated_at: now,
+              timeline: [
+                ...o.timeline.filter((t) => t.completed),
+                { status: 'cancelled', timestamp: now, label: 'Cancelled', completed: true },
+              ],
             }
+      ),
+      notifications: notif ? [notif, ...s.notifications] : s.notifications,
+      auditLogs: pushAudit([log])(s.auditLogs),
+    }));
+  };
+
+  const getOrderById = (id: string) =>
+    orders.find((o) => o.id === id || String(o.order_number) === id || o.id === `ord-${id}`);
+
+  const getProductBySlug = (slug: string) => products.find((p) => p.slug === slug || p.id === slug);
+
+  const getProductById = (id: string) => products.find((p) => p.id === id);
+
+  // Customers are derived from real online orders (plus demo records when enabled).
+  const customers = useMemo<AdminCustomer[]>(() => {
+    const map = new Map<string, AdminCustomer>();
+    if (DEMO_DATA_ENABLED) DEMO_CUSTOMERS.forEach((c) => map.set(normalizePhone(c.phone), { ...c }));
+
+    [...orders]
+      .filter((o) => o.order_type !== 'pos_counter' && o.shipping_phone)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .forEach((o) => {
+        const key = normalizePhone(o.shipping_phone || '');
+        if (!key) return;
+        const existing = map.get(key);
+        const counts = o.status !== 'cancelled';
+        if (existing) {
+          existing.totalOrders += counts ? 1 : 0;
+          existing.totalSpent = roundMoney(existing.totalSpent + (counts ? o.total_amount : 0));
+          existing.lastOrderDate = o.created_at;
+          existing.address = `${o.shipping_address}, ${o.shipping_city}`;
+          existing.name = o.shipping_name || existing.name;
+        } else {
+          map.set(key, {
+            id: o.user_id || `c-${key}`,
+            name: o.shipping_name || 'Customer',
+            phone: o.shipping_phone || '',
+            email: null,
+            address: `${o.shipping_address}, ${o.shipping_city}`,
+            totalOrders: counts ? 1 : 0,
+            totalSpent: counts ? o.total_amount : 0,
+            lastOrderDate: o.created_at,
+            status: 'active',
+            joinedDate: o.created_at,
           });
         }
+      });
+    return Array.from(map.values()).sort((a, b) => b.totalSpent - a.totalSpent);
+  }, [orders]);
 
-        addAuditLog({
-          actor: 'Store Owner',
-          action: 'Order Cancelled',
-          entity: `Order #${ord.order_number}`,
-          oldValue: ord.status,
-          newValue: 'cancelled',
-          reason,
-        });
-
-        return {
-          ...ord,
-          status: 'cancelled',
-          cancelled_reason: reason,
-          updated_at: new Date().toISOString(),
-        };
-      })
-    );
-  };
-
-  const getOrderById = (id: string) => {
-    return orders.find((o) => o.id === id || String(o.order_number) === id || o.id === `ord-${id}`);
-  };
-
-  const getProductBySlug = (slug: string) => {
-    return products.find((p) => p.slug === slug || p.id === slug);
-  };
-
-  const getProductById = (id: string) => {
-    return products.find((p) => p.id === id);
-  };
-
-  const getCustomerById = (id: string) => {
-    return customers.find((c) => c.id === id || c.phone === id);
-  };
+  const getCustomerById = (id: string) =>
+    customers.find((c) => c.id === id || c.phone === id || normalizePhone(c.phone) === normalizePhone(id));
 
   const addCoupon = (coupon: Coupon) => {
-    setCoupons((prev) => [coupon, ...prev]);
-    addAuditLog({
+    const log = makeAudit({
       actor: 'Store Owner',
-      action: 'Coupon Created',
+      action: 'Coupon created',
       entity: coupon.code,
-      newValue: `${coupon.discountType === 'flat' ? '₹' : ''}${coupon.discountValue} off`,
+      newValue: `${coupon.discountType === 'flat' ? '₹' : ''}${coupon.discountValue}${coupon.discountType === 'percentage' ? '%' : ''} off`,
       reason: coupon.description,
     });
+    setState((s) => ({ ...s, coupons: [coupon, ...s.coupons], auditLogs: pushAudit([log])(s.auditLogs) }));
   };
 
   const deleteCoupon = (id: string) => {
-    setCoupons((prev) => prev.filter((c) => c.id !== id));
+    setState((s) => ({ ...s, coupons: s.coupons.filter((c) => c.id !== id) }));
+  };
+
+  const createSupportTicket = (ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'status'>) => {
+    const newTicket: SupportTicket = {
+      ...ticket,
+      id: `t-${Date.now().toString(36)}`,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
+    const notif = makeNotification({
+      title: 'New support request',
+      message: `${ticket.customerName}: ${ticket.issueType}${ticket.orderNumber ? ` (order #${ticket.orderNumber})` : ''}`,
+      type: 'support',
+      link: '/admin/support',
+    });
+    setState((s) => ({
+      ...s,
+      supportTickets: [newTicket, ...s.supportTickets],
+      notifications: [notif, ...s.notifications],
+    }));
+    return newTicket;
   };
 
   const updateTicketStatus = (ticketId: string, status: 'open' | 'in_progress' | 'resolved') => {
-    setSupportTickets((prev) =>
-      prev.map((t) => (t.id === ticketId ? { ...t, status } : t))
-    );
-    addAuditLog({
+    const log = makeAudit({
       actor: 'Store Owner',
-      action: 'Support Ticket Status',
+      action: 'Support ticket updated',
       entity: `Ticket #${ticketId}`,
       newValue: status,
     });
+    setState((s) => ({
+      ...s,
+      supportTickets: s.supportTickets.map((t) => (t.id === ticketId ? { ...t, status } : t)),
+      auditLogs: pushAudit([log])(s.auditLogs),
+    }));
   };
 
   const markNotificationRead = (id: string) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
-    );
+    setState((s) => ({
+      ...s,
+      notifications: s.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
+    }));
   };
 
   const markAllNotificationsRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setState((s) => ({ ...s, notifications: s.notifications.map((n) => ({ ...n, read: true })) }));
   };
+
+  const catalog = useMemo(() => products.filter((p) => p.is_active), [products]);
 
   return (
     <StoreContext.Provider
       value={{
+        isHydrated,
         products,
+        catalog,
         categories,
         settings,
         coupons,
@@ -937,6 +665,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         addCoupon,
         deleteCoupon,
         getCustomerById,
+        createSupportTicket,
         updateTicketStatus,
         markNotificationRead,
         markAllNotificationsRead,

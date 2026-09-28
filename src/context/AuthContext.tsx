@@ -1,30 +1,50 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { CustomerAddress, Profile } from '@/types/database';
+import { formatPhone, normalizePhone } from '@/lib/format';
 
-export interface UserSession {
-  user: Profile | null;
+interface Account {
+  profile: Profile;
   addresses: CustomerAddress[];
   defaultAddressId: string | null;
-  favorites: string[]; // product IDs
-  isAdminLoggedIn: boolean;
+  favorites: string[];
 }
 
+interface PendingOtp {
+  phone: string;
+  code: string;
+  expiresAt: number;
+  attempts: number;
+}
+
+interface AuthState {
+  accounts: Record<string, Account>;
+  currentPhone: string | null;
+  guestFavorites: string[];
+  pendingOtp: PendingOtp | null;
+}
+
+export type AddressInput = Omit<CustomerAddress, 'id' | 'user_id' | 'created_at'>;
+
+export type VerifyResult =
+  | { ok: true; isNewUser: boolean }
+  | { ok: false; error: string };
+
 interface AuthContextType {
+  isHydrated: boolean;
   user: Profile | null;
   addresses: CustomerAddress[];
   defaultAddress: CustomerAddress | null;
   favorites: string[];
   isAuthenticated: boolean;
-  isAdmin: boolean;
-  loginWithPhone: (phone: string, fullName?: string) => Promise<void>;
-  loginWithGoogle: () => Promise<void>;
-  verifyOtp: (otp: string) => Promise<boolean>;
+  /** Starts phone login. Returns the one-time code so the caller can deliver it (SMS gateway / test mode). */
+  requestOtp: (phone: string) => string;
+  verifyOtp: (code: string) => VerifyResult;
+  pendingPhone: string | null;
   logout: () => void;
-  adminLogin: (passcode: string) => boolean;
-  adminLogout: () => void;
-  saveAddress: (address: Omit<CustomerAddress, 'id' | 'user_id' | 'created_at'>) => void;
+  saveAddress: (address: AddressInput) => CustomerAddress | null;
+  updateAddress: (id: string, address: AddressInput) => void;
   deleteAddress: (id: string) => void;
   setDefaultAddress: (id: string) => void;
   toggleFavorite: (productId: string) => void;
@@ -34,230 +54,211 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const AUTH_STORAGE_KEY = 'kirana_auth_v1';
+const AUTH_STORAGE_KEY = 'kirana_auth_v2';
+const OTP_TTL_MS = 5 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
 
-const DEFAULT_ADDRESSES: CustomerAddress[] = [
-  {
-    id: 'addr-default-1',
-    user_id: 'cust-demo-1',
-    name: 'Rahul Sharma',
-    phone: '+91 98765 43210',
-    house_flat: 'Flat 402, Block B',
-    street_area: 'Gaur City 2, Sector 16C',
-    landmark: 'Near Galaxy Plaza',
-    city: 'Ghaziabad',
-    pincode: '201009',
-    address_type: 'home',
-    is_default: true,
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: 'addr-default-2',
-    user_id: 'cust-demo-1',
-    name: 'Rahul Sharma (Office)',
-    phone: '+91 98765 43210',
-    house_flat: 'Floor 3, Tower A',
-    street_area: 'Cyber Hub Tech Park',
-    landmark: 'Opposite Metro Pillar 42',
-    city: 'Noida',
-    pincode: '201301',
-    address_type: 'work',
-    is_default: false,
-    created_at: new Date().toISOString(),
-  },
-];
+const emptyState: AuthState = { accounts: {}, currentPhone: null, guestFavorites: [], pendingOtp: null };
+
+function generateOtp(): string {
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  return String(buf[0] % 1_000_000).padStart(6, '0');
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<UserSession>({
-    user: {
-      id: 'cust-demo-1',
-      role: 'customer',
-      full_name: 'Rahul Sharma',
-      phone: '+91 98765 43210',
-      email: 'rahul.sharma@example.com',
-      avatar_url: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    },
-    addresses: DEFAULT_ADDRESSES,
-    defaultAddressId: 'addr-default-1',
-    favorites: ['p-1', 'p-7', 'p-10'],
-    isAdminLoggedIn: true,
-  });
-
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [state, setState] = useState<AuthState>(emptyState);
+  const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
     try {
       const stored = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (stored) {
-        setSession(JSON.parse(stored));
-      }
+      if (stored) setState({ ...emptyState, ...JSON.parse(stored) });
     } catch (e) {
       console.error('Failed to load auth session', e);
     }
-    setIsLoaded(true);
+    setIsHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (isLoaded) {
-      try {
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
-      } catch (e) {
-        console.error('Failed to save auth session', e);
-      }
+    if (!isHydrated) return;
+    try {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      console.error('Failed to save auth session', e);
     }
-  }, [session, isLoaded]);
+  }, [state, isHydrated]);
 
-  const loginWithPhone = async (phone: string, fullName: string = 'Kirana Customer') => {
-    // Generate or update customer session
-    const customerUser: Profile = {
-      id: `cust-${Date.now().toString(36)}`,
-      role: 'customer',
-      full_name: fullName,
-      phone: phone.startsWith('+91') ? phone : `+91 ${phone}`,
-      email: null,
-      avatar_url: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+  const account = state.currentPhone ? state.accounts[state.currentPhone] ?? null : null;
 
-    setSession((prev) => ({
-      ...prev,
-      user: customerUser,
-    }));
+  const updateAccount = (fn: (a: Account) => Account) => {
+    setState((prev) => {
+      if (!prev.currentPhone || !prev.accounts[prev.currentPhone]) return prev;
+      return {
+        ...prev,
+        accounts: { ...prev.accounts, [prev.currentPhone]: fn(prev.accounts[prev.currentPhone]) },
+      };
+    });
   };
 
-  const loginWithGoogle = async () => {
-    const customerUser: Profile = {
-      id: `cust-google-${Date.now().toString(36)}`,
-      role: 'customer',
-      full_name: 'Aditi Verma',
-      phone: '+91 98112 34567',
-      email: 'aditi.verma@gmail.com',
-      avatar_url: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
-    setSession((prev) => ({
+  const requestOtp = (rawPhone: string) => {
+    const phone = normalizePhone(rawPhone);
+    const code = generateOtp();
+    setState((prev) => ({
       ...prev,
-      user: customerUser,
+      pendingOtp: { phone, code, expiresAt: Date.now() + OTP_TTL_MS, attempts: 0 },
     }));
+    return code;
   };
 
-  const verifyOtp = async (otp: string): Promise<boolean> => {
-    // Standard test OTP '123456' or any 6-digit number in demo
-    return otp.length === 6;
+  const verifyOtp = (code: string): VerifyResult => {
+    const pending = state.pendingOtp;
+    if (!pending) return { ok: false, error: 'Session expired. Please request a new code.' };
+    if (Date.now() > pending.expiresAt) {
+      setState((prev) => ({ ...prev, pendingOtp: null }));
+      return { ok: false, error: 'This code has expired. Please request a new one.' };
+    }
+    if (pending.attempts >= OTP_MAX_ATTEMPTS) {
+      setState((prev) => ({ ...prev, pendingOtp: null }));
+      return { ok: false, error: 'Too many attempts. Please request a new code.' };
+    }
+    if (code !== pending.code) {
+      setState((prev) =>
+        prev.pendingOtp ? { ...prev, pendingOtp: { ...prev.pendingOtp, attempts: prev.pendingOtp.attempts + 1 } } : prev
+      );
+      return { ok: false, error: 'Incorrect code. Please try again.' };
+    }
+
+    const phone = pending.phone;
+    const existing = state.accounts[phone];
+    const now = new Date().toISOString();
+    const isNewUser = !existing || !existing.profile.full_name;
+
+    setState((prev) => {
+      const acc: Account = prev.accounts[phone] ?? {
+        profile: {
+          id: `cust-${phone}`,
+          role: 'customer',
+          full_name: '',
+          phone: formatPhone(phone),
+          email: null,
+          avatar_url: null,
+          created_at: now,
+          updated_at: now,
+        },
+        addresses: [],
+        defaultAddressId: null,
+        favorites: [],
+      };
+      const favorites = Array.from(new Set([...acc.favorites, ...prev.guestFavorites]));
+      return {
+        ...prev,
+        accounts: { ...prev.accounts, [phone]: { ...acc, favorites } },
+        currentPhone: phone,
+        guestFavorites: [],
+        pendingOtp: null,
+      };
+    });
+
+    return { ok: true, isNewUser };
   };
 
   const logout = () => {
-    setSession((prev) => ({
-      ...prev,
-      user: null,
-      isAdminLoggedIn: false,
-    }));
+    setState((prev) => ({ ...prev, currentPhone: null, pendingOtp: null }));
   };
 
-  const adminLogin = (passcode: string): boolean => {
-    if (passcode === 'admin123' || passcode === 'kirana2026' || passcode === '123456') {
-      setSession((prev) => ({
-        ...prev,
-        isAdminLoggedIn: true,
-      }));
-      return true;
-    }
-    return false;
-  };
-
-  const adminLogout = () => {
-    setSession((prev) => ({
-      ...prev,
-      isAdminLoggedIn: false,
-    }));
-  };
-
-  const saveAddress = (address: Omit<CustomerAddress, 'id' | 'user_id' | 'created_at'>) => {
+  const saveAddress = (address: AddressInput): CustomerAddress | null => {
+    if (!account) return null;
     const newAddress: CustomerAddress = {
       ...address,
-      id: `addr-${Date.now()}`,
-      user_id: session.user ? session.user.id : 'guest',
+      id: `addr-${Date.now().toString(36)}`,
+      user_id: account.profile.id,
       created_at: new Date().toISOString(),
     };
-
-    setSession((prev) => {
-      const isFirst = prev.addresses.length === 0;
-      const updated = [...prev.addresses, newAddress];
+    updateAccount((a) => {
+      const makeDefault = a.addresses.length === 0 || address.is_default;
       return {
-        ...prev,
-        addresses: updated,
-        defaultAddressId: isFirst || newAddress.is_default ? newAddress.id : prev.defaultAddressId,
+        ...a,
+        addresses: [
+          ...a.addresses.map((x) => (makeDefault ? { ...x, is_default: false } : x)),
+          { ...newAddress, is_default: makeDefault },
+        ],
+        defaultAddressId: makeDefault ? newAddress.id : a.defaultAddressId,
       };
     });
+    return newAddress;
+  };
+
+  const updateAddress = (id: string, address: AddressInput) => {
+    updateAccount((a) => ({
+      ...a,
+      addresses: a.addresses.map((x) =>
+        x.id === id ? { ...x, ...address } : address.is_default ? { ...x, is_default: false } : x
+      ),
+      defaultAddressId: address.is_default ? id : a.defaultAddressId,
+    }));
   };
 
   const deleteAddress = (id: string) => {
-    setSession((prev) => ({
-      ...prev,
-      addresses: prev.addresses.filter((a) => a.id !== id),
-      defaultAddressId: prev.defaultAddressId === id ? (prev.addresses[0]?.id || null) : prev.defaultAddressId,
-    }));
-  };
-
-  const setDefaultAddress = (id: string) => {
-    setSession((prev) => ({
-      ...prev,
-      defaultAddressId: id,
-      addresses: prev.addresses.map((a) => ({
-        ...a,
-        is_default: a.id === id,
-      })),
-    }));
-  };
-
-  const toggleFavorite = (productId: string) => {
-    setSession((prev) => {
-      const exists = prev.favorites.includes(productId);
+    updateAccount((a) => {
+      const addresses = a.addresses.filter((x) => x.id !== id);
+      const defaultAddressId = a.defaultAddressId === id ? addresses[0]?.id ?? null : a.defaultAddressId;
       return {
-        ...prev,
-        favorites: exists ? prev.favorites.filter((id) => id !== productId) : [...prev.favorites, productId],
+        ...a,
+        addresses: addresses.map((x) => ({ ...x, is_default: x.id === defaultAddressId })),
+        defaultAddressId,
       };
     });
   };
 
-  const isFavorite = (productId: string) => {
-    return session.favorites.includes(productId);
-  };
-
-  const updateProfile = (profileUpdate: Partial<Profile>) => {
-    if (!session.user) return;
-    setSession((prev) => ({
-      ...prev,
-      user: prev.user ? { ...prev.user, ...profileUpdate, updated_at: new Date().toISOString() } : null,
+  const setDefaultAddress = (id: string) => {
+    updateAccount((a) => ({
+      ...a,
+      defaultAddressId: id,
+      addresses: a.addresses.map((x) => ({ ...x, is_default: x.id === id })),
     }));
   };
 
+  const favorites = account ? account.favorites : state.guestFavorites;
+
+  const toggleFavorite = (productId: string) => {
+    const flip = (list: string[]) =>
+      list.includes(productId) ? list.filter((x) => x !== productId) : [...list, productId];
+    if (account) {
+      updateAccount((a) => ({ ...a, favorites: flip(a.favorites) }));
+    } else {
+      setState((prev) => ({ ...prev, guestFavorites: flip(prev.guestFavorites) }));
+    }
+  };
+
+  const isFavorite = (productId: string) => favorites.includes(productId);
+
+  const updateProfile = (profileUpdate: Partial<Profile>) => {
+    updateAccount((a) => ({
+      ...a,
+      profile: { ...a.profile, ...profileUpdate, updated_at: new Date().toISOString() },
+    }));
+  };
+
+  const addresses = account?.addresses ?? [];
   const defaultAddress =
-    session.addresses.find((a) => a.id === session.defaultAddressId) ||
-    session.addresses[0] ||
-    null;
+    addresses.find((a) => a.id === account?.defaultAddressId) || addresses[0] || null;
 
   return (
     <AuthContext.Provider
       value={{
-        user: session.user,
-        addresses: session.addresses,
+        isHydrated,
+        user: account?.profile ?? null,
+        addresses,
         defaultAddress,
-        favorites: session.favorites,
-        isAuthenticated: !!session.user,
-        isAdmin: session.isAdminLoggedIn,
-        loginWithPhone,
-        loginWithGoogle,
+        favorites,
+        isAuthenticated: !!account,
+        requestOtp,
         verifyOtp,
+        pendingPhone: state.pendingOtp?.phone ?? null,
         logout,
-        adminLogin,
-        adminLogout,
         saveAddress,
+        updateAddress,
         deleteAddress,
         setDefaultAddress,
         toggleFavorite,

@@ -1,13 +1,13 @@
 {
   "name": "Apna Kirana Store",
   "short_name": "ApnaKirana",
-  "description": "Fresh Kirana Groceries Delivered in 25-35 Minutes",
+  "description": "Groceries from your neighbourhood kirana, delivered in minutes.",
   "start_url": "/",
   "scope": "/",
   "id": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#15803d",
+  "theme_color": "#ffffff",
   "orientation": "portrait-primary",
   "icons": [
     {
@@ -37,14 +37,22 @@
   ],
   "shortcuts": [
     {
-      "name": "Quick Search",
+      "name": "Search",
       "url": "/search",
-      "description": "Find atta, dal, oil & groceries"
+      "description": "Find groceries"
     },
     {
-      "name": "Track Orders",
+      "name": "Your orders",
       "url": "/orders",
-      "description": "Check live delivery status"
+      "description": "Track and reorder"
+    },
+    {
+      "name": "Cart",
+      "url": "/cart"
     }
+  ],
+  "categories": [
+    "shopping",
+    "food"
   ]
 }

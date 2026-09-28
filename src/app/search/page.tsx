@@ -1,153 +1,252 @@
 'use client';
 
-import React, { useState, useTransition } from 'react';
-import Link from 'next/link';
-import { Navbar } from '@/components/Navbar';
-import { ProductCard } from '@/components/ProductCard';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { ArrowLeft, Clock3, SearchX, Search, TrendingUp, X } from 'lucide-react';
+import { SiteHeader } from '@/components/SiteHeader';
+import { ProductGrid } from '@/components/ProductGrid';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { useStore } from '@/context/StoreContext';
-import { Search, ArrowLeft, X, TrendingUp, Clock, ShoppingBag } from 'lucide-react';
+import type { Product } from '@/types/database';
 
-export default function SearchPage() {
-  const { products } = useStore();
-  const [query, setQuery] = useState('');
-  const [recentSearches, setRecentSearches] = useState<string[]>([
-    'atta',
-    'desi ghee',
-    'toor dal',
-    'tata salt',
-    'maggi',
-  ]);
+const RECENT_KEY = 'kirana_recent_searches';
 
-  const popularTags = ['Aashirvaad Atta', 'Amul Ghee', 'Basmati Rice', 'Parle-G', 'Mustard Oil', 'Vim Gel'];
+// Common Hindi / Hinglish grocery words → catalogue terms.
+const SYNONYMS: Record<string, string> = {
+  aata: 'atta',
+  chini: 'sugar',
+  shakkar: 'sugar',
+  namak: 'salt',
+  tel: 'oil',
+  doodh: 'milk',
+  chawal: 'rice',
+  chai: 'tea',
+  patti: 'tea',
+  haldi: 'turmeric',
+  mirch: 'chilli',
+  ghee: 'ghee',
+  sabun: 'soap',
+  daal: 'dal',
+  makkhan: 'butter',
+  suji: 'sooji',
+  rava: 'sooji',
+};
 
-  const filtered = query.trim()
-    ? products.filter(
-        (p) =>
-          p.name.toLowerCase().includes(query.toLowerCase()) ||
-          (p.brand && p.brand.toLowerCase().includes(query.toLowerCase())) ||
-          (p.description && p.description.toLowerCase().includes(query.toLowerCase())) ||
-          (p.barcode && p.barcode.includes(query))
-      )
-    : [];
+function score(p: Product, tokens: string[]): number {
+  const name = p.name.toLowerCase();
+  const brand = (p.brand || '').toLowerCase();
+  const desc = (p.description || '').toLowerCase();
+  let total = 0;
+  for (const t of tokens) {
+    if (p.barcode === t || p.sku?.toLowerCase() === t) total += 100;
+    else if (name.startsWith(t)) total += 12;
+    else if (name.split(/\s+/).some((w) => w.startsWith(t))) total += 9;
+    else if (name.includes(t)) total += 6;
+    else if (brand.includes(t)) total += 5;
+    else if (desc.includes(t)) total += 2;
+    else return 0; // every token must match somewhere
+  }
+  return total + (p.stock_quantity > 0 ? 1 : 0);
+}
 
-  const handleSelectSearch = (term: string) => {
-    setQuery(term);
-    if (!recentSearches.includes(term)) {
-      setRecentSearches((prev) => [term, ...prev.slice(0, 4)]);
+function SearchView() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const { catalog } = useStore();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const [query, setQuery] = useState(params.get('q') ?? '');
+  const [debounced, setDebounced] = useState(query);
+  const [recent, setRecent] = useState<string[]>([]);
+
+  useEffect(() => {
+    try {
+      setRecent(JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'));
+    } catch {
+      setRecent([]);
     }
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), 180);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  // Mirror the query in the URL so results are shareable and survive refresh/back.
+  useEffect(() => {
+    const q = debounced.trim();
+    const url = q ? `/search?q=${encodeURIComponent(q)}` : '/search';
+    router.replace(url, { scroll: false });
+  }, [debounced, router]);
+
+  const saveRecent = (term: string) => {
+    const t = term.trim();
+    if (!t) return;
+    const next = [t, ...recent.filter((r) => r.toLowerCase() !== t.toLowerCase())].slice(0, 8);
+    setRecent(next);
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+    } catch {}
   };
 
+  const clearRecent = () => {
+    setRecent([]);
+    try {
+      localStorage.removeItem(RECENT_KEY);
+    } catch {}
+  };
+
+  const results = useMemo(() => {
+    const tokens = debounced
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((t) => SYNONYMS[t] ?? t);
+    if (tokens.length === 0) return [];
+    return catalog
+      .map((p) => ({ p, s: score(p, tokens) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .map((x) => x.p);
+  }, [debounced, catalog]);
+
+  const trending = useMemo(
+    () =>
+      catalog
+        .filter((p) => p.is_featured && p.stock_quantity > 0)
+        .slice(0, 8)
+        .map((p) => (p.brand ? p.name.replace(new RegExp(`^${p.brand}\\s*`, 'i'), '') : p.name).split(' ').slice(0, 3).join(' ')),
+    [catalog]
+  );
+
+  const pick = (term: string) => {
+    setQuery(term);
+    setDebounced(term);
+    saveRecent(term);
+    inputRef.current?.blur();
+  };
+
+  const hasQuery = debounced.trim().length > 0;
+
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar searchQuery={query} onSearchChange={setQuery} />
-
-      <main className="max-w-4xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6 flex-1">
-        {/* Dedicated Search Header Bar */}
-        <div className="bg-white p-3.5 sm:p-4 rounded-3xl border border-slate-200/90 shadow-2xs flex items-center gap-3">
-          <Link href="/" className="p-2 hover:bg-slate-100 rounded-xl text-slate-500">
-            <ArrowLeft className="w-5 h-5" />
-          </Link>
-
-          <div className="flex-1 relative flex items-center">
-            <Search className="w-5 h-5 text-slate-400 absolute left-3" />
+    <>
+      <div className="sticky top-0 z-40 border-b border-line bg-white md:top-[77px]">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            saveRecent(query);
+            inputRef.current?.blur();
+          }}
+          className="mx-auto flex max-w-4xl items-center gap-1 px-2 py-2.5 md:px-6"
+          role="search"
+        >
+          <button
+            type="button"
+            onClick={() => router.back()}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full hover:bg-canvas md:hidden"
+            aria-label="Go back"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-ink-muted" />
             <input
-              type="text"
+              ref={inputRef}
               autoFocus
+              type="search"
+              enterKeyHint="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by brand, item name, barcode, or Hindi keyword..."
-              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 rounded-2xl text-xs sm:text-sm font-semibold outline-none focus:ring-2 focus:ring-green-500 border border-slate-200"
+              placeholder="Search for atta, dal, milk…"
+              className="h-11 w-full rounded-xl border border-line bg-canvas pl-10 pr-10 text-ink placeholder:text-ink-faint focus:border-leaf-500 focus:bg-white focus:outline-none"
+              aria-label="Search products"
             />
             {query && (
               <button
-                onClick={() => setQuery('')}
-                className="absolute right-3 w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-600 flex items-center justify-center text-xs"
+                type="button"
+                onClick={() => {
+                  setQuery('');
+                  inputRef.current?.focus();
+                }}
+                className="absolute right-2.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-line text-ink-soft"
+                aria-label="Clear search"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
-        </div>
+        </form>
+      </div>
 
-        {/* When Query is empty: Show Recent & Popular Suggestions */}
-        {!query.trim() ? (
-          <div className="space-y-6">
-            {/* Recent Searches */}
-            {recentSearches.length > 0 && (
-              <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-2xs space-y-3">
-                <div className="flex items-center justify-between text-xs font-black text-slate-400 uppercase tracking-wider">
-                  <span className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-slate-400" /> Recent Searches
-                  </span>
-                  <button
-                    onClick={() => setRecentSearches([])}
-                    className="text-slate-400 hover:text-rose-600 font-bold"
-                  >
+      <main className="mx-auto w-full max-w-4xl flex-1 px-4 pb-28 pt-5 md:px-6">
+        {!hasQuery ? (
+          <div className="space-y-8">
+            {recent.length > 0 && (
+              <section>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-base font-bold text-ink">Recent searches</h2>
+                  <button onClick={clearRecent} className="text-sm font-medium text-leaf-600">
                     Clear
                   </button>
                 </div>
-
                 <div className="flex flex-wrap gap-2">
-                  {recentSearches.map((term) => (
+                  {recent.map((r) => (
                     <button
-                      key={term}
-                      onClick={() => handleSelectSearch(term)}
-                      className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
+                      key={r}
+                      onClick={() => pick(r)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm text-ink-soft hover:border-ink-faint"
                     >
-                      {term}
+                      <Clock3 className="h-3.5 w-3.5 text-ink-faint" /> {r}
                     </button>
                   ))}
                 </div>
-              </div>
+              </section>
             )}
-
-            {/* Popular Searches */}
-            <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-2xs space-y-3">
-              <span className="flex items-center gap-1.5 text-xs font-black text-slate-400 uppercase tracking-wider">
-                <TrendingUp className="w-3.5 h-3.5 text-emerald-600" /> Popular in Store
-              </span>
-
-              <div className="flex flex-wrap gap-2">
-                {popularTags.map((tag) => (
-                  <button
-                    key={tag}
-                    onClick={() => handleSelectSearch(tag)}
-                    className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold rounded-xl transition flex items-center gap-1.5"
-                  >
-                    <Search className="w-3 h-3 text-emerald-600" />
-                    <span>{tag}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+            {trending.length > 0 && (
+              <section>
+                <h2 className="mb-3 text-base font-bold text-ink">Trending in your store</h2>
+                <div className="flex flex-wrap gap-2">
+                  {trending.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => pick(t)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm text-ink-soft hover:border-ink-faint"
+                    >
+                      <TrendingUp className="h-3.5 w-3.5 text-leaf-500" /> {t}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
+        ) : results.length === 0 ? (
+          <EmptyState
+            icon={<SearchX className="h-9 w-9" />}
+            title={`No results for “${debounced}”`}
+            description="Check the spelling or try a simpler word like “atta”, “oil” or “biscuit”."
+            action={{ label: 'Browse categories', href: '/categories' }}
+          />
         ) : (
-          /* Search Results */
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-800">
-                Found {filtered.length} products for "{query}"
-              </h2>
-            </div>
-
-            {filtered.length === 0 ? (
-              <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center space-y-3">
-                <ShoppingBag className="w-12 h-12 text-slate-300 mx-auto" />
-                <h3 className="font-extrabold text-slate-800 text-base">No matches found</h3>
-                <p className="text-xs text-slate-500">
-                  Try searching for keywords like "atta", "dal", "oil", "sugar", or "ghee".
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-                {filtered.map((product) => (
-                  <ProductCard key={product.id} product={product} />
-                ))}
-              </div>
-            )}
-          </div>
+          <>
+            <p className="mb-3 text-sm text-ink-muted">
+              Showing {results.length} result{results.length > 1 ? 's' : ''} for{' '}
+              <span className="font-semibold text-ink">“{debounced}”</span>
+            </p>
+            <ProductGrid products={results} />
+          </>
         )}
       </main>
+    </>
+  );
+}
+
+export default function SearchPage() {
+  return (
+    <div className="flex min-h-screen flex-col">
+      <SiteHeader hideOnMobile />
+      <Suspense fallback={null}>
+        <SearchView />
+      </Suspense>
     </div>
   );
 }

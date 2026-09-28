@@ -3,199 +3,108 @@
 import React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Navbar } from '@/components/Navbar';
+import { ChevronRight, Heart, HelpCircle, LogOut, MapPin, Package, Pencil, ShieldCheck, Smartphone } from 'lucide-react';
+import { SiteHeader } from '@/components/SiteHeader';
+import { PageHeader } from '@/components/ui/PageHeader';
+import { RequireAuth } from '@/components/ui/RequireAuth';
 import { useAuth } from '@/context/AuthContext';
+import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
-import {
-  User,
-  MapPin,
-  ClipboardList,
-  Heart,
-  HelpCircle,
-  LogOut,
-  ChevronRight,
-  ShieldCheck,
-  Phone,
-  Bell,
-  Sparkles,
-  Download,
-  Smartphone
-} from 'lucide-react';
 
-export default function ProfilePage() {
+function ProfileView() {
   const router = useRouter();
-  const { user, defaultAddress, favorites, logout, isAuthenticated } = useAuth();
+  const { user, addresses, favorites, logout } = useAuth();
+  const { orders } = useStore();
   const { showToast } = useToast();
+  const myOrders = orders.filter((o) => o.user_id === user?.id);
 
-  const handleLogout = () => {
-    logout();
-    showToast({
-      type: 'info',
-      title: 'Logged Out',
-      message: 'You have been signed out from Apni Kirana.',
-    });
-    router.push('/');
-  };
+  const rows = [
+    { href: '/orders', icon: Package, label: 'Your orders', hint: myOrders.length ? `${myOrders.length} orders` : undefined },
+    { href: '/profile/addresses', icon: MapPin, label: 'Address book', hint: addresses.length ? `${addresses.length} saved` : undefined },
+    { href: '/profile/favorites', icon: Heart, label: 'Saved items', hint: favorites.length ? `${favorites.length}` : undefined },
+    { href: '/help', icon: HelpCircle, label: 'Help & support' },
+  ];
+
+  const info = [
+    { href: '/privacy', icon: ShieldCheck, label: 'Privacy policy' },
+    { href: '/terms', icon: ShieldCheck, label: 'Terms of service' },
+  ];
 
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar />
-
-      <main className="max-w-2xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6 flex-1">
-        {/* Profile Header Card */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-2xs flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-green-700 to-emerald-500 text-white flex items-center justify-center font-black text-2xl shadow-md">
-              {user?.full_name ? user.full_name.charAt(0) : 'U'}
-            </div>
-            <div>
-              <h1 className="text-lg sm:text-xl font-black text-slate-900 leading-tight">
-                {user?.full_name || 'Guest User'}
-              </h1>
-              <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                {user?.phone || '+91 98765 43210'}
-              </p>
-              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full inline-block mt-1 border border-emerald-200">
-                Verified Kirana Customer
-              </span>
-            </div>
-          </div>
-
-          <Link
-            href="/profile/setup"
-            className="text-xs font-bold text-green-700 hover:text-green-800 bg-green-50 px-3 py-1.5 rounded-xl border border-green-200 transition"
-          >
-            Edit
-          </Link>
+    <main className="mx-auto w-full max-w-2xl flex-1 px-3 pb-28 pt-3 md:px-6 md:pt-2">
+      <section className="card flex items-center gap-4 px-4 py-5">
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-sun-400 text-xl font-extrabold text-ink">
+          {user?.full_name?.charAt(0).toUpperCase() || '?'}
         </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-lg font-bold text-ink">{user?.full_name || 'Add your name'}</p>
+          <p className="text-sm text-ink-muted">{user?.phone}</p>
+          {user?.email && <p className="truncate text-sm text-ink-muted">{user.email}</p>}
+        </div>
+        <Link href="/profile/setup" className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-canvas" aria-label="Edit profile">
+          <Pencil className="h-4 w-4 text-ink-soft" />
+        </Link>
+      </section>
 
-        {/* Customer Hub Navigation List */}
-        <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xs divide-y divide-slate-100 overflow-hidden">
-          <Link
-            href="/orders"
-            className="p-4 flex items-center justify-between hover:bg-slate-50 transition"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-green-50 text-green-700 flex items-center justify-center">
-                <ClipboardList className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">My Orders & Live Dispatches</p>
-                <p className="text-[11px] text-slate-500 font-medium">View active order status & reorder previous lists</p>
-              </div>
-            </div>
-            <ChevronRight className="w-4 h-4 text-slate-400" />
-          </Link>
-
-          <Link
-            href="/profile/addresses"
-            className="p-4 flex items-center justify-between hover:bg-slate-50 transition"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-green-50 text-green-700 flex items-center justify-center">
-                <MapPin className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">Saved Delivery Addresses</p>
-                <p className="text-[11px] text-slate-500 font-medium">
-                  {defaultAddress
-                    ? `${defaultAddress.house_flat}, ${defaultAddress.street_area}`
-                    : 'Manage home and office locations'}
-                </p>
-              </div>
-            </div>
-            <ChevronRight className="w-4 h-4 text-slate-400" />
-          </Link>
-
-          <Link
-            href="/profile/favorites"
-            className="p-4 flex items-center justify-between hover:bg-slate-50 transition"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
-                <Heart className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">Saved Grocery Essentials</p>
-                <p className="text-[11px] text-slate-500 font-medium">
-                  {favorites.length} frequent staples saved for fast re-ordering
-                </p>
-              </div>
-            </div>
-            <ChevronRight className="w-4 h-4 text-slate-400" />
-          </Link>
-
-          <Link
-            href="/help"
-            className="p-4 flex items-center justify-between hover:bg-slate-50 transition"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                <HelpCircle className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">Help & Support</p>
-                <p className="text-[11px] text-slate-500 font-medium">Delivery issues, order refunds & direct store contact</p>
-              </div>
-            </div>
-            <ChevronRight className="w-4 h-4 text-slate-400" />
-          </Link>
-
-          <button
-            onClick={() => {
-              if (typeof window !== 'undefined') {
-                window.dispatchEvent(new CustomEvent('trigger-pwa-install'));
-              }
-            }}
-            className="w-full text-left p-4 flex items-center justify-between hover:bg-emerald-50/50 transition cursor-pointer"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
-                <Smartphone className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                  <span>Install Apna Kirana App</span>
-                  <span className="bg-emerald-600 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full uppercase">
-                    PWA App
+      {[rows, info].map((group, gi) => (
+        <section key={gi} className="card mt-3 overflow-hidden">
+          {gi === 1 && <p className="px-4 pb-1 pt-4 text-xs font-semibold uppercase tracking-wider text-ink-faint">More</p>}
+          <ul className="divide-y divide-line">
+            {group.map(({ href, icon: Icon, label, hint }: { href: string; icon: typeof Package; label: string; hint?: string }) => (
+              <li key={href}>
+                <Link href={href} className="flex items-center gap-3.5 px-4 py-3.5 hover:bg-canvas/60">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-canvas">
+                    <Icon className="h-[18px] w-[18px] text-ink-soft" />
                   </span>
-                </p>
-                <p className="text-[11px] text-slate-500 font-medium">Download to Android/iPhone home screen for instant ordering</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-1 text-emerald-700 font-bold text-xs bg-emerald-50 px-2.5 py-1.5 rounded-lg border border-emerald-200">
-              <Download className="w-3.5 h-3.5" />
-              <span>Install</span>
-            </div>
-          </button>
+                  <span className="flex-1 text-[15px] text-ink">{label}</span>
+                  {hint && <span className="text-sm text-ink-faint">{hint}</span>}
+                  <ChevronRight className="h-4 w-4 text-ink-faint" />
+                </Link>
+              </li>
+            ))}
+            {gi === 1 && (
+              <li>
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent('trigger-pwa-install'))}
+                  className="flex w-full items-center gap-3.5 px-4 py-3.5 text-left hover:bg-canvas/60"
+                >
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-canvas">
+                    <Smartphone className="h-[18px] w-[18px] text-ink-soft" />
+                  </span>
+                  <span className="flex-1 text-[15px] text-ink">Install the app</span>
+                  <ChevronRight className="h-4 w-4 text-ink-faint" />
+                </button>
+              </li>
+            )}
+          </ul>
+        </section>
+      ))}
 
-          <Link
-            href="/admin"
-            className="p-4 flex items-center justify-between hover:bg-slate-50 transition"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-700 flex items-center justify-center">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">Owner POS & Billing Dashboard</p>
-                <p className="text-[11px] text-slate-500 font-medium">Switch to store owner mode</p>
-              </div>
-            </div>
-            <ChevronRight className="w-4 h-4 text-slate-400" />
-          </Link>
-        </div>
+      <button
+        onClick={() => {
+          logout();
+          showToast({ type: 'info', title: 'You’ve been logged out' });
+          router.replace('/');
+        }}
+        className="card mt-3 flex w-full items-center gap-3.5 px-4 py-3.5 text-left text-[15px] text-rose-600 hover:bg-rose-50/50"
+      >
+        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-rose-50">
+          <LogOut className="h-[18px] w-[18px]" />
+        </span>
+        Log out
+      </button>
+    </main>
+  );
+}
 
-        {/* Logout */}
-        {isAuthenticated && (
-          <button
-            onClick={handleLogout}
-            className="w-full py-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs sm:text-sm rounded-2xl border border-rose-200 transition flex items-center justify-center gap-2"
-          >
-            <LogOut className="w-4 h-4" /> Sign Out
-          </button>
-        )}
-      </main>
+export default function ProfilePage() {
+  return (
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <SiteHeader hideOnMobile />
+      <PageHeader title="Account" />
+      <RequireAuth>
+        <ProfileView />
+      </RequireAuth>
     </div>
   );
 }

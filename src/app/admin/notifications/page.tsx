@@ -4,6 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
+import { formatRelative } from '@/lib/format';
 import { Bell, CheckCircle2, AlertTriangle, HelpCircle, Package, ArrowRight } from 'lucide-react';
 
 export default function AdminNotificationsPage() {
@@ -70,7 +71,7 @@ export default function AdminNotificationsPage() {
                         )}
                       </div>
                       <p className="text-xs text-slate-400 mt-0.5">{notif.message}</p>
-                      <span className="text-[10px] text-slate-500 block mt-1">{notif.timestamp}</span>
+                      <span className="text-[10px] text-slate-500 block mt-1">{formatRelative(notif.timestamp)}</span>
                     </div>
                   </div>
 

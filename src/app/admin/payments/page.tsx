@@ -4,12 +4,10 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
-import { useToast } from '@/context/ToastContext';
-import { CreditCard, DollarSign, RotateCcw, CheckCircle2, AlertTriangle, ArrowUpRight, Search } from 'lucide-react';
+import { CreditCard } from 'lucide-react';
 
 export default function AdminPaymentsPage() {
   const { orders } = useStore();
-  const { showToast } = useToast();
   const [filter, setFilter] = useState<'all' | 'upi' | 'cod' | 'cash_pos'>('all');
 
   const filtered = orders.filter((o) => {

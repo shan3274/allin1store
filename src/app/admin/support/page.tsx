@@ -3,8 +3,9 @@
 import React, { useState } from 'react';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
+import { formatRelative } from '@/lib/format';
 import { useToast } from '@/context/ToastContext';
-import { HelpCircle, Phone, CheckCircle2, Clock, AlertTriangle } from 'lucide-react';
+import { HelpCircle, Phone } from 'lucide-react';
 
 export default function AdminSupportPage() {
   const { supportTickets, updateTicketStatus } = useStore();
@@ -115,7 +116,7 @@ export default function AdminSupportPage() {
                 <p className="font-bold text-white text-xs sm:text-sm">{t.issueType}</p>
                 <p className="text-xs text-slate-300 mt-1 leading-relaxed">{t.description}</p>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Reported by: <strong>{t.customerName}</strong> ({t.customerPhone}) • {t.createdAt}
+                  Reported by: <strong>{t.customerName}</strong> ({t.customerPhone}) • {formatRelative(t.createdAt)}
                 </p>
               </div>
 

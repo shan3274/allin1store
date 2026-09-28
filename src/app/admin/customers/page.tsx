@@ -4,10 +4,11 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
-import { Users, Search, Phone, ShoppingBag, ArrowRight } from 'lucide-react';
+import { formatDate, formatRelative } from '@/lib/format';
+import { Users, Search, Phone } from 'lucide-react';
 
 export default function AdminCustomersPage() {
-  const { customers, orders } = useStore();
+  const { customers } = useStore();
   const [search, setSearch] = useState('');
 
   const filtered = customers.filter(
@@ -67,7 +68,7 @@ export default function AdminCustomersPage() {
                         </div>
                         <div>
                           <p className="font-bold text-white text-xs">{c.name}</p>
-                          <p className="text-[10px] text-slate-500">Member since {c.joinedDate}</p>
+                          <p className="text-[10px] text-slate-500">Customer since {formatDate(c.joinedDate)}</p>
                         </div>
                       </div>
                     </td>
@@ -90,7 +91,7 @@ export default function AdminCustomersPage() {
                     </td>
 
                     <td className="p-3.5 text-slate-400 text-xs">
-                      {c.lastOrderDate}
+                      {formatRelative(c.lastOrderDate)}
                     </td>
 
                     <td className="p-3.5 text-right space-x-2">

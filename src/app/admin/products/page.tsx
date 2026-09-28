@@ -9,11 +9,8 @@ import {
   Package,
   Search,
   Plus,
-  AlertTriangle,
-  CheckCircle2,
   Edit2,
-  Trash2,
-  ChevronRight
+  Trash2
 } from 'lucide-react';
 
 export default function AdminProductsPage() {
@@ -137,6 +134,7 @@ export default function AdminProductsPage() {
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 bg-slate-900 rounded-xl p-1 shrink-0 flex items-center justify-center">
                           {p.image_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
                             <img src={p.image_url} alt="" className="w-full h-full object-contain" />
                           ) : (
                             <span className="font-black text-green-400">{p.name.charAt(0)}</span>

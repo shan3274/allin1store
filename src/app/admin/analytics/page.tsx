@@ -3,7 +3,7 @@
 import React from 'react';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
-import { BarChart3, TrendingUp, DollarSign, Package, ShoppingBag, CreditCard } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 
 export default function AdminAnalyticsPage() {
   const { orders, products } = useStore();

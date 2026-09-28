@@ -1,6 +1,8 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from 'lucide-react';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
@@ -20,56 +22,73 @@ interface ToastContextType {
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
+const ICONS = {
+  success: <CheckCircle2 className="h-4 w-4 shrink-0 text-leaf-200" />,
+  error: <AlertCircle className="h-4 w-4 shrink-0 text-rose-300" />,
+  warning: <AlertTriangle className="h-4 w-4 shrink-0 text-sun-400" />,
+  info: <Info className="h-4 w-4 shrink-0 text-sky-300" />,
+};
+
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const pathname = usePathname();
 
-  const removeToast = (id: string) => {
+  const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+    const t = timers.current.get(id);
+    if (t) clearTimeout(t);
+    timers.current.delete(id);
+  }, []);
 
-  const showToast = (toast: Omit<ToastMessage, 'id'>) => {
-    const id = Math.random().toString(36).substring(2, 9);
-    const newToast: ToastMessage = { ...toast, id };
-    setToasts((prev) => [...prev, newToast]);
+  const showToast = useCallback(
+    (toast: Omit<ToastMessage, 'id'>) => {
+      const id = Math.random().toString(36).slice(2, 9);
+      setToasts((prev) => {
+        // Same message twice in a row just refreshes.
+        const deduped = prev.filter((t) => t.title !== toast.title);
+        return [...deduped, { ...toast, id }].slice(-3);
+      });
+      timers.current.set(
+        id,
+        setTimeout(() => removeToast(id), toast.duration || (toast.type === 'error' ? 5000 : 3000))
+      );
+    },
+    [removeToast]
+  );
 
-    setTimeout(() => {
-      removeToast(id);
-    }, toast.duration || 3500);
-  };
+  // Sit above the mobile cart bar / bottom nav on storefront pages.
+  const isAdmin = pathname?.startsWith('/admin');
 
   return (
     <ToastContext.Provider value={{ toasts, showToast, removeToast }}>
       {children}
-      {/* Toast container */}
-      <div className="fixed bottom-20 md:bottom-6 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 md:px-0">
-        {toasts.map((t) => {
-          const bgColors = {
-            success: 'bg-emerald-800 text-white border-emerald-600',
-            error: 'bg-rose-700 text-white border-rose-500',
-            warning: 'bg-amber-600 text-white border-amber-400',
-            info: 'bg-slate-800 text-white border-slate-600',
-          }[t.type];
-
-          return (
-            <div
-              key={t.id}
-              className={`pointer-events-auto rounded-xl shadow-xl border p-3.5 flex items-start gap-3 transform transition-all duration-300 animate-slide-up ${bgColors}`}
-            >
-              <div className="flex-1">
-                <p className="text-xs font-bold leading-snug">{t.title}</p>
-                {t.message && (
-                  <p className="text-[11px] opacity-90 mt-0.5 leading-tight">{t.message}</p>
-                )}
-              </div>
-              <button
-                onClick={() => removeToast(t.id)}
-                className="opacity-70 hover:opacity-100 text-xs font-bold ml-1 p-0.5"
-              >
-                ✕
-              </button>
+      <div
+        aria-live="polite"
+        className={`pointer-events-none fixed inset-x-0 z-[70] flex flex-col items-center gap-2 px-4 ${
+          isAdmin ? 'bottom-20 md:bottom-6' : 'bottom-36 md:bottom-8'
+        }`}
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            role={t.type === 'error' ? 'alert' : 'status'}
+            className="pointer-events-auto flex w-full max-w-sm animate-slide-up items-start gap-2.5 rounded-xl bg-ink px-3.5 py-3 text-white shadow-pop"
+          >
+            <span className="mt-0.5">{ICONS[t.type]}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold leading-snug">{t.title}</p>
+              {t.message && <p className="mt-0.5 text-xs leading-snug text-white/70">{t.message}</p>}
             </div>
-          );
-        })}
+            <button
+              onClick={() => removeToast(t.id)}
+              className="-mr-1 rounded p-0.5 text-white/50 hover:text-white"
+              aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
       </div>
     </ToastContext.Provider>
   );
