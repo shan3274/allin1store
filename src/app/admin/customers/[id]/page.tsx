@@ -4,7 +4,8 @@ import React, { use } from 'react';
 import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
-import { ArrowLeft, Phone, MapPin, ShoppingBag, ShieldCheck, Mail, Calendar } from 'lucide-react';
+import { formatDate } from '@/lib/format';
+import { ArrowLeft, Phone } from 'lucide-react';
 
 interface AdminCustomerDetailPageProps {
   params: Promise<{ id: string }>;
@@ -56,7 +57,7 @@ export default function AdminCustomerDetailPage({ params }: AdminCustomerDetailP
                 <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
                   Verified Local Buyer
                 </span>
-                <span className="text-[10px] text-slate-500">Joined: {customer.joinedDate}</span>
+                <span className="text-[10px] text-slate-500">Customer since {formatDate(customer.joinedDate)}</span>
               </div>
             </div>
           </div>

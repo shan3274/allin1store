@@ -1,11 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
-import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
-import { Package, Search, Plus, Minus, AlertTriangle, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Package, Search } from 'lucide-react';
 
 export default function AdminInventoryPage() {
   const { products, updateStock } = useStore();

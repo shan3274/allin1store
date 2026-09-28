@@ -1,55 +1,80 @@
-import type { Metadata, Viewport } from "next";
-import "./globals.css";
-import { StoreProvider } from "@/context/StoreContext";
-import { AuthProvider } from "@/context/AuthContext";
-import { CartProvider } from "@/context/CartContext";
-import { ToastProvider } from "@/context/ToastContext";
-import { BottomNav } from "@/components/BottomNav";
-import { PwaInstallBanner } from "@/components/PwaInstallBanner";
+import type { Metadata, Viewport } from 'next';
+import { Figtree, Fraunces } from 'next/font/google';
+import './globals.css';
+import { StoreProvider } from '@/context/StoreContext';
+import { AuthProvider } from '@/context/AuthContext';
+import { CartProvider } from '@/context/CartContext';
+import { ToastProvider } from '@/context/ToastContext';
+import { BottomNav } from '@/components/BottomNav';
+import { InstallPrompt } from '@/components/InstallPrompt';
+
+const font = Figtree({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+  variable: '--font-sans',
+  display: 'swap',
+});
+
+const display = Fraunces({
+  subsets: ['latin'],
+  weight: ['500', '600', '700'],
+  variable: '--font-display',
+  display: 'swap',
+});
+
+const STORE_NAME = process.env.NEXT_PUBLIC_STORE_NAME || 'Apna Kirana Store';
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL;
 
 export const metadata: Metadata = {
-  title: "Apna Kirana Store | Fast Local Grocery Delivery",
-  description: "Order fresh chakki atta, dal, desi ghee, edible oil, biscuits & daily essentials in 25-35 minutes from your trusted neighbourhood kirana.",
-  manifest: "/manifest.json",
+  ...(SITE_URL ? { metadataBase: new URL(SITE_URL) } : {}),
+  title: {
+    default: `${STORE_NAME} — Groceries delivered in minutes`,
+    template: `%s · ${STORE_NAME}`,
+  },
+  description:
+    'Order atta, dal, rice, oil, ghee, dairy, snacks and daily essentials from your neighbourhood kirana. Delivered in minutes. Pay on delivery.',
+  applicationName: STORE_NAME,
+  manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
-    statusBarStyle: "default",
-    title: "Apna Kirana",
+    statusBarStyle: 'default',
+    title: STORE_NAME,
   },
   icons: {
-    icon: "/icons/icon-192x192.png",
-    apple: "/icons/icon-192x192.png",
+    icon: [
+      { url: '/icons/icon.svg', type: 'image/svg+xml' },
+      { url: '/icons/icon-192x192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: '/icons/icon-192x192.png',
   },
+  openGraph: {
+    type: 'website',
+    siteName: STORE_NAME,
+    title: `${STORE_NAME} — Groceries delivered in minutes`,
+    description: 'Daily groceries from your neighbourhood kirana, delivered in minutes.',
+    images: ['/icons/icon-512x512.png'],
+  },
+  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#15803d",
-  width: "device-width",
+  themeColor: '#f7f4ee',
+  width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  viewportFit: 'cover',
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className="h-full">
-      <head>
-        <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
-      </head>
-      <body className="min-h-screen bg-slate-100/70 text-slate-900 pb-20 md:pb-0 antialiased flex flex-col font-sans selection:bg-green-100 selection:text-green-900">
+    <html lang="en-IN" className={`${font.variable} ${display.variable}`}>
+      <body className="min-h-screen font-sans">
         <ToastProvider>
           <StoreProvider>
             <AuthProvider>
               <CartProvider>
-                <div className="flex-1 flex flex-col w-full">
-                  {children}
-                </div>
+                {children}
                 <BottomNav />
-                <PwaInstallBanner />
+                <InstallPrompt />
               </CartProvider>
             </AuthProvider>
           </StoreProvider>

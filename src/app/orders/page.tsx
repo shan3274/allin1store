@@ -2,144 +2,90 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Navbar } from '@/components/Navbar';
+import { ChevronRight, Package } from 'lucide-react';
+import { SiteHeader } from '@/components/SiteHeader';
+import { PageHeader } from '@/components/ui/PageHeader';
+import { RequireAuth } from '@/components/ui/RequireAuth';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { ProductImage } from '@/components/ui/ProductImage';
+import { OrderStatusIcon } from '@/components/OrderStatusIcon';
 import { useStore } from '@/context/StoreContext';
-import { useCart } from '@/context/CartContext';
-import { useToast } from '@/context/ToastContext';
-import { ClipboardList, ArrowRight, RotateCcw, Clock, MapPin, ChevronRight } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
+import { useReorder } from '@/lib/useReorder';
+import { ORDER_STATUS_LABEL, formatINR, formatRelative } from '@/lib/format';
 
-export default function OrdersHistoryPage() {
+function OrdersList() {
   const { orders, getProductById } = useStore();
-  const { addToCart } = useCart();
-  const { showToast } = useToast();
+  const { user } = useAuth();
+  const reorder = useReorder();
+  const mine = orders.filter((o) => o.user_id === user?.id).sort((a, b) => b.created_at.localeCompare(a.created_at));
 
-  const handleReorder = (order: typeof orders[0]) => {
-    let count = 0;
-    order.items?.forEach((item) => {
-      if (item.product_id) {
-        const prod = getProductById(item.product_id);
-        if (prod && prod.stock_quantity > 0) {
-          addToCart(prod, item.quantity);
-          count++;
-        }
-      }
-    });
-
-    if (count > 0) {
-      showToast({
-        type: 'success',
-        title: 'Reordered!',
-        message: `${count} items added to basket.`,
-      });
-    }
-  };
+  if (mine.length === 0) {
+    return (
+      <EmptyState
+        icon={<Package className="h-9 w-9" />}
+        title="No orders yet"
+        description="Your orders will show up here so you can track them and order again in one tap."
+        action={{ label: 'Start shopping', href: '/' }}
+      />
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar />
-
-      <main className="max-w-4xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6 flex-1">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <ClipboardList className="w-6 h-6 text-green-600" /> My Orders & Reorder
-          </h1>
-          <p className="text-xs text-slate-500 font-medium">
-            Track active kirana dispatches or re-purchase past household staples
-          </p>
-        </div>
-
-        {orders.length === 0 ? (
-          <div className="bg-white rounded-3xl border border-slate-200/90 p-12 text-center space-y-3 shadow-2xs">
-            <div className="w-16 h-16 bg-slate-100 rounded-3xl flex items-center justify-center mx-auto text-2xl">
-              📦
-            </div>
-            <h3 className="font-extrabold text-slate-900 text-base">No previous orders</h3>
-            <p className="text-xs text-slate-500">
-              When you order grocery essentials from your local store, your history appears here.
-            </p>
-            <Link
-              href="/"
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition"
-            >
-              Start Shopping <ArrowRight className="w-4 h-4" />
+    <ul className="space-y-3">
+      {mine.map((o) => {
+        const active = !['delivered', 'cancelled', 'returned'].includes(o.status);
+        return (
+          <li key={o.id} className="card overflow-hidden">
+            <Link href={`/orders/${o.id}`} className="flex items-center gap-3 px-4 pb-3 pt-4">
+              <OrderStatusIcon status={o.status} />
+              <div className="min-w-0 flex-1">
+                <p className="text-[15px] font-bold text-ink">
+                  {o.status === 'delivered' ? 'Delivered' : ORDER_STATUS_LABEL[o.status]}
+                  {active && <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-leaf-500 align-middle" />}
+                </p>
+                <p className="tabular text-xs text-ink-muted">
+                  {formatINR(o.total_amount)} · {formatRelative(o.created_at)}
+                </p>
+              </div>
+              <ChevronRight className="h-5 w-5 text-ink-faint" />
             </Link>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {orders.map((ord) => {
-              const statusStyles: Record<string, string> = {
-                delivered: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-                cancelled: 'bg-rose-100 text-rose-800 border-rose-200',
-                returned: 'bg-rose-100 text-rose-800 border-rose-200',
-                out_for_delivery: 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse',
-                packed: 'bg-amber-100 text-amber-800 border-amber-200',
-                confirmed: 'bg-slate-100 text-slate-800 border-slate-200',
-                pending: 'bg-amber-50 text-amber-800 border-amber-200',
-              };
-
-              return (
-                <div
-                  key={ord.id}
-                  className="bg-white rounded-3xl border border-slate-200/90 shadow-2xs p-5 space-y-4 hover:border-green-300 transition"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-black text-xs bg-slate-100 text-slate-800 px-2 py-0.5 rounded-lg border border-slate-200">
-                        #{ord.order_number}
-                      </span>
-                      <span className="text-xs text-slate-500 font-medium">
-                        {new Date(ord.created_at).toLocaleDateString([], {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full border ${statusStyles[ord.status] || 'bg-slate-100 text-slate-800'}`}
-                      >
-                        {ord.status.replace(/_/g, ' ')}
-                      </span>
-                      <span className="text-xs font-black text-slate-900">₹{ord.total_amount}</span>
-                    </div>
+            <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-4">
+              {o.items?.map((i) => {
+                const p = i.product_id ? getProductById(i.product_id) : undefined;
+                return (
+                  <div key={i.id} className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-line bg-tile/60">
+                    <ProductImage src={p?.image_url} alt={i.product_name} className="h-full w-full object-cover" fallbackClassName="text-sm" />
+                    {i.quantity > 1 && (
+                      <span className="absolute bottom-0.5 right-0.5 rounded bg-ink/80 px-1 text-[10px] font-bold text-white">×{i.quantity}</span>
+                    )}
                   </div>
+                );
+              })}
+            </div>
+            {!active && (
+              <div className="border-t border-line px-4 py-2.5">
+                <button onClick={() => reorder(o)} className="text-sm font-semibold text-leaf-600">
+                  Order again
+                </button>
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
-                  {/* Items snapshot */}
-                  <div className="text-xs space-y-1">
-                    {ord.items?.map((item, idx) => (
-                      <div key={idx} className="flex justify-between text-slate-700">
-                        <span className="font-medium">
-                          {item.quantity} × {item.product_name}
-                        </span>
-                        <span className="font-bold">₹{item.total_price}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Actions */}
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-3">
-                    <Link
-                      href={`/orders/${ord.id}`}
-                      className="text-xs font-bold text-slate-700 hover:text-green-700 flex items-center gap-1"
-                    >
-                      <span>Track Order</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </Link>
-
-                    <button
-                      onClick={() => handleReorder(ord)}
-                      className="px-4 py-2 bg-green-50 hover:bg-green-600 text-green-700 hover:text-white border border-green-300 hover:border-green-600 rounded-xl text-xs font-black transition flex items-center gap-1.5 shadow-2xs"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" /> Reorder All Items
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+export default function OrdersPage() {
+  return (
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <SiteHeader hideOnMobile />
+      <PageHeader title="Your orders" backHref="/profile" />
+      <main className="mx-auto w-full max-w-2xl flex-1 px-3 pb-28 pt-3 md:px-6 md:pt-2">
+        <RequireAuth>
+          <OrdersList />
+        </RequireAuth>
       </main>
     </div>
   );

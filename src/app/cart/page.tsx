@@ -3,30 +3,37 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import {
+  AlertTriangle,
+  Bike,
+  ChevronRight,
+  FileText,
+  ShoppingBag,
+  ShoppingCart,
+  TicketPercent,
+  Timer,
+  Trash2,
+} from 'lucide-react';
+import { SiteHeader } from '@/components/SiteHeader';
+import { PageHeader } from '@/components/ui/PageHeader';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { ProductImage } from '@/components/ui/ProductImage';
+import { QuantityStepper } from '@/components/ui/QuantityStepper';
+import { ProductRail } from '@/components/ProductRail';
+import { AddressPicker } from '@/components/AddressPicker';
 import { useCart } from '@/context/CartContext';
 import { useAuth } from '@/context/AuthContext';
 import { useStore } from '@/context/StoreContext';
-import { Navbar } from '@/components/Navbar';
-import {
-  Trash2,
-  Plus,
-  Minus,
-  ArrowRight,
-  ShoppingBag,
-  Tag,
-  Clock,
-  ShieldCheck,
-  Check,
-  MapPin,
-  ChevronRight,
-  AlertCircle
-} from 'lucide-react';
+import { formatINR, roundMoney } from '@/lib/format';
+import { getStoreStatus } from '@/lib/storeHours';
+import { useIsClient } from '@/lib/useIsClient';
 
 export default function CartPage() {
   const router = useRouter();
+  const isClient = useIsClient();
+  const cart = useCart();
   const {
     items,
-    updateQuantity,
     removeFromCart,
     clearCart,
     subtotal,
@@ -36,284 +43,363 @@ export default function CartPage() {
     discountAmount,
     totalAmount,
     appliedCoupon,
+    couponWarning,
+    availableCoupons,
     applyCoupon,
     removeCoupon,
     amountNeededForFreeDelivery,
     freeDeliveryProgressPercent,
-  } = useCart();
-
+    minOrderAmount,
+    meetsMinOrder,
+    unavailableItems,
+    totalItems,
+  } = cart;
   const { isAuthenticated, defaultAddress } = useAuth();
-  const { settings } = useStore();
-  const [couponCodeInput, setCouponCodeInput] = useState('');
-  const [couponError, setCouponError] = useState<string | null>(null);
+  const { settings, catalog } = useStore();
 
-  const handleApplyCoupon = (e: React.FormEvent) => {
+  const [code, setCode] = useState('');
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const status = getStoreStatus(settings);
+  const eta = settings.delivery_eta_minutes || 30;
+
+  const suggestions = catalog
+    .filter((p) => p.is_featured && p.stock_quantity > 0 && !items.some((i) => i.product.id === p.id))
+    .slice(0, 10);
+
+  const submitCode = (e: React.FormEvent) => {
     e.preventDefault();
-    setCouponError(null);
-    if (!couponCodeInput.trim()) return;
-
-    const res = applyCoupon(couponCodeInput);
-    if (!res.success) {
-      setCouponError(res.message);
-    } else {
-      setCouponCodeInput('');
-    }
+    if (!code.trim()) return;
+    const res = applyCoupon(code);
+    if (res.success) {
+      setCode('');
+      setCodeError(null);
+    } else setCodeError(res.message);
   };
 
-  const handleProceedToCheckout = () => {
-    if (!isAuthenticated) {
-      router.push('/login?redirect=/checkout');
-    } else {
-      router.push('/checkout');
-    }
+  // Primary action depends on where the customer is in the funnel.
+  let blocker: string | null = null;
+  if (unavailableItems.length) blocker = 'Some items are out of stock. Update your basket to continue.';
+  else if (!meetsMinOrder) blocker = `Minimum order is ${formatINR(minOrderAmount)}. Add ${formatINR(roundMoney(minOrderAmount - subtotal))} more.`;
+
+  const primary = () => {
+    if (!isAuthenticated) return router.push('/login?redirect=/cart');
+    if (!defaultAddress) return setPickerOpen(true);
+    router.push('/checkout');
   };
+  const primaryLabel = !isAuthenticated ? 'Login to proceed' : !defaultAddress ? 'Add address to proceed' : 'Proceed to checkout';
+
+  if (!isClient) {
+    return (
+      <div className="min-h-screen">
+        <SiteHeader hideOnMobile />
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <div className="flex min-h-screen flex-col">
+        <SiteHeader hideOnMobile />
+        <div className="md:hidden">
+          <PageHeader title="Your basket" />
+        </div>
+        <EmptyState
+          icon={<ShoppingCart className="h-9 w-9" />}
+          title="Your basket is empty"
+          description="Add atta, dal, milk and everything else you need — delivered in minutes."
+          action={{ label: 'Start shopping', href: '/' }}
+        />
+        <div className="mx-auto w-full max-w-6xl md:px-6">
+          <ProductRail title="Popular right now" products={suggestions} />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar />
-
-      <main className="max-w-5xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6 flex-1">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-              <ShoppingBag className="w-6 h-6 text-green-600" /> Your Grocery Basket
-            </h1>
-            <p className="text-xs text-slate-500 font-medium">
-              {items.length} {items.length === 1 ? 'item' : 'unique items'} selected for delivery
-            </p>
-          </div>
-
-          {items.length > 0 && (
-            <button
-              onClick={clearCart}
-              className="text-xs text-rose-600 hover:text-rose-700 font-bold flex items-center gap-1 bg-rose-50 px-3 py-1.5 rounded-xl border border-rose-200 transition"
-            >
-              <Trash2 className="w-3.5 h-3.5" /> Empty Basket
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <SiteHeader hideOnMobile />
+      <div className="md:hidden">
+        <PageHeader
+          title="Your basket"
+          right={
+            <button onClick={clearCart} className="px-3 text-sm font-medium text-rose-600" aria-label="Empty cart">
+              Clear
             </button>
-          )}
+          }
+        />
+      </div>
+
+      <main className="mx-auto w-full max-w-6xl flex-1 px-3 pb-44 pt-3 md:px-6 md:pb-12 md:pt-6">
+        <div className="mb-4 hidden items-center justify-between md:flex">
+          <h1 className="font-display text-3xl font-semibold text-ink">Your basket</h1>
+          <button onClick={clearCart} className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-600">
+            <Trash2 className="h-4 w-4" /> Empty basket
+          </button>
         </div>
 
-        {items.length === 0 ? (
-          /* Empty Cart State */
-          <div className="bg-white border border-slate-200/90 rounded-3xl p-12 text-center space-y-4 shadow-2xs">
-            <div className="w-20 h-20 bg-green-50 text-green-600 rounded-3xl flex items-center justify-center mx-auto text-3xl">
-              🛒
-            </div>
-            <div className="space-y-1">
-              <h2 className="font-black text-slate-800 text-lg">Your basket is feeling light</h2>
-              <p className="text-xs sm:text-sm text-slate-500 max-w-sm mx-auto">
-                Explore fresh wheat flour, ghee, lentils, spices and daily milk products from your local store.
-              </p>
-            </div>
-            <Link
-              href="/"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-md transition"
-            >
-              Browse Grocery Aisles <ArrowRight className="w-4 h-4" />
-            </Link>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Left: Items List */}
-            <div className="lg:col-span-7 space-y-3">
-              {/* Free delivery meter */}
-              <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs space-y-2">
-                <div className="flex items-center justify-between text-xs font-bold">
-                  <span className="text-slate-700">
-                    {amountNeededForFreeDelivery === 0
-                      ? '🎉 Free instant delivery unlocked!'
-                      : `Add ₹${amountNeededForFreeDelivery} more for FREE Delivery`}
-                  </span>
-                  <span className="text-green-700 font-black">{freeDeliveryProgressPercent}%</span>
-                </div>
-                <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-green-600 h-full rounded-full transition-all duration-500"
-                    style={{ width: `${freeDeliveryProgressPercent}%` }}
-                  />
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_380px] md:gap-6">
+          <div className="min-w-0 space-y-3">
+            {/* Items */}
+            <section className="card overflow-hidden">
+              <div className="flex items-center gap-3 border-b border-line px-4 py-3.5">
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-canvas">
+                  <Timer className="h-5 w-5 text-ink-soft" />
+                </span>
+                <div>
+                  <p className="font-bold text-ink">{status.isOpen ? `Arriving in about ${eta} min` : 'Scheduled delivery'}</p>
+                  <p className="text-xs text-ink-muted">
+                    Shipment of {totalItems} item{totalItems > 1 ? 's' : ''}
+                  </p>
                 </div>
               </div>
 
-              {/* Items Card */}
-              <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xs divide-y divide-slate-100 overflow-hidden">
-                {items.map((item) => (
-                  <div
-                    key={item.product.id}
-                    className="p-4 flex items-center justify-between gap-3 sm:gap-4 hover:bg-slate-50/50 transition"
-                  >
-                    {/* Thumbnail */}
-                    <div className="w-16 h-16 bg-slate-50 rounded-xl p-1 flex-shrink-0 flex items-center justify-center border border-slate-100">
-                      {item.product.image_url ? (
-                        <img
-                          src={item.product.image_url}
-                          alt={item.product.name}
-                          className="w-full h-full object-contain rounded-lg"
-                        />
-                      ) : (
-                        <span className="text-lg font-bold text-green-700">
-                          {item.product.name.charAt(0)}
-                        </span>
-                      )}
-                    </div>
+              {unavailableItems.length > 0 && (
+                <div className="flex gap-2 bg-orange-50 px-4 py-3 text-[13px] text-orange-800">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>Stock changed for {unavailableItems.map((i) => i.product.name).join(', ')}. Please reduce the quantity or remove.</span>
+                </div>
+              )}
 
-                    {/* Details */}
-                    <div className="flex-1 min-w-0">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 block truncate">
-                        {item.product.brand || 'Kirana'}
-                      </span>
-                      <h4 className="font-bold text-slate-900 text-xs sm:text-sm truncate">
-                        {item.product.name}
-                      </h4>
-                      <p className="text-xs text-slate-500 font-medium">
-                        {item.product.weight_volume || item.product.unit}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-xs font-black text-slate-900">
-                          ₹{Number(item.product.selling_price) * item.quantity}
-                        </span>
-                        {Number(item.product.mrp) > Number(item.product.selling_price) && (
-                          <span className="text-[11px] text-slate-400 line-through">
-                            ₹{Number(item.product.mrp) * item.quantity}
-                          </span>
+              <ul className="divide-y divide-line">
+                {items.map(({ product, quantity }) => {
+                  const short = quantity > product.stock_quantity;
+                  return (
+                    <li key={product.id} className="flex items-center gap-3 px-4 py-3.5">
+                      <Link href={`/product/${product.slug}`} className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-line bg-tile/60">
+                        <ProductImage src={product.image_url} alt={product.name} className="h-full w-full object-cover" />
+                      </Link>
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-2 text-[13px] font-medium leading-snug text-ink">{product.name}</p>
+                        <p className="text-xs text-ink-muted">{product.weight_volume || product.unit}</p>
+                        {short ? (
+                          <button onClick={() => removeFromCart(product.id)} className="mt-0.5 text-xs font-semibold text-orange-700">
+                            {product.stock_quantity === 0 ? 'Out of stock · Remove' : `Only ${product.stock_quantity} left`}
+                          </button>
+                        ) : (
+                          <p className="tabular mt-0.5 text-[13px] font-bold text-ink">
+                            {formatINR(product.selling_price * quantity)}
+                            {product.mrp > product.selling_price && (
+                              <span className="ml-1.5 text-xs font-normal text-ink-faint line-through">
+                                {formatINR(product.mrp * quantity)}
+                              </span>
+                            )}
+                          </p>
                         )}
                       </div>
-                    </div>
+                      <QuantityStepper product={product} size="sm" />
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
 
-                    {/* Quantity Controls */}
-                    <div className="flex items-center bg-slate-100/90 rounded-xl p-0.5 border border-slate-200">
-                      <button
-                        onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
-                        className="p-1.5 hover:bg-white rounded-lg text-slate-700 transition"
-                        title="Decrease"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <span className="px-2 text-xs font-black text-slate-900 min-w-[20px] text-center">
-                        {item.quantity}
-                      </span>
-                      <button
-                        onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
-                        className="p-1.5 hover:bg-white rounded-lg text-slate-700 transition"
-                        title="Increase"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            {suggestions.length > 0 && (
+              <section className="card px-1 md:px-4">
+                <ProductRail title="Add a little more" products={suggestions} />
+              </section>
+            )}
+          </div>
 
-              {/* Delivery ETA info */}
-              <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-3.5 flex items-center gap-3 text-xs text-emerald-900 font-semibold">
-                <Clock className="w-5 h-5 text-emerald-700 flex-shrink-0" />
-                <span>
-                  Delivery in <strong>25–35 minutes</strong> from {settings.store_name} ({settings.city})
-                </span>
-              </div>
-            </div>
-
-            {/* Right: Bill & Coupon Details */}
-            <div className="lg:col-span-5 space-y-4">
-              {/* Coupon Section */}
-              <div className="bg-white rounded-3xl p-5 border border-slate-200/90 shadow-2xs space-y-3">
-                <div className="flex items-center gap-2">
-                  <Tag className="w-4 h-4 text-green-600" />
-                  <h3 className="font-extrabold text-slate-900 text-xs sm:text-sm">Apply Store Coupon</h3>
+          <aside className="min-w-0 space-y-3 md:sticky md:top-[96px] md:self-start">
+            {/* Free delivery meter */}
+            {settings.free_delivery_above > 0 && (
+              <section className="card px-4 py-3.5">
+                <div className="flex items-center gap-2 text-[13px]">
+                  <Bike className="h-4 w-4 shrink-0 text-leaf-600" />
+                  {amountNeededForFreeDelivery > 0 ? (
+                    <span className="text-ink-soft">
+                      Add <b className="text-ink">{formatINR(amountNeededForFreeDelivery)}</b> more for free delivery
+                    </span>
+                  ) : (
+                    <span className="font-semibold text-leaf-700">Free delivery unlocked</span>
+                  )}
                 </div>
+                <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-canvas">
+                  <div className="h-full rounded-full bg-leaf-500 transition-all" style={{ width: `${freeDeliveryProgressPercent}%` }} />
+                </div>
+              </section>
+            )}
 
-                {appliedCoupon ? (
-                  <div className="p-3 bg-green-50 border border-green-200 rounded-2xl flex items-center justify-between">
+            {/* Coupons */}
+            <section className="card px-4 py-4">
+              <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-ink">
+                <TicketPercent className="h-4 w-4 text-offer" /> Offers
+              </h2>
+              {appliedCoupon ? (
+                <div className="rounded-xl border border-leaf-200 bg-leaf-50/70 px-3.5 py-3">
+                  <div className="flex items-center justify-between gap-2">
                     <div>
-                      <span className="font-mono font-black text-xs text-green-800 bg-green-200/60 px-2 py-0.5 rounded">
-                        {appliedCoupon.code}
-                      </span>
-                      <p className="text-[11px] text-green-700 mt-1">{appliedCoupon.description}</p>
+                      <p className="text-sm font-bold text-leaf-700">{appliedCoupon.code} applied</p>
+                      <p className="text-xs text-ink-muted">
+                        {discountAmount > 0 ? `You save ${formatINR(discountAmount)}` : appliedCoupon.description}
+                      </p>
                     </div>
-                    <button
-                      onClick={removeCoupon}
-                      className="text-xs font-bold text-rose-600 hover:underline ml-2"
-                    >
+                    <button onClick={removeCoupon} className="text-sm font-semibold text-rose-600">
                       Remove
                     </button>
                   </div>
-                ) : (
-                  <form onSubmit={handleApplyCoupon} className="space-y-2">
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="Try WELCOME50 or KIRANA10"
-                        value={couponCodeInput}
-                        onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
-                        className="flex-1 text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl uppercase font-mono font-bold outline-none focus:ring-1 focus:ring-green-500"
-                      />
-                      <button
-                        type="submit"
-                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition"
-                      >
-                        Apply
-                      </button>
-                    </div>
-                    {couponError && (
-                      <p className="text-[11px] text-rose-600 font-semibold">{couponError}</p>
-                    )}
-                  </form>
-                )}
-              </div>
-
-              {/* Bill Details */}
-              <div className="bg-white rounded-3xl p-5 border border-slate-200/90 shadow-2xs space-y-3">
-                <h3 className="font-extrabold text-slate-900 text-sm border-b border-slate-100 pb-2">
-                  Bill Summary
-                </h3>
-
-                <div className="space-y-2 text-xs text-slate-600 font-semibold">
-                  <div className="flex justify-between">
-                    <span>Item Total (MRP)</span>
-                    <span className="text-slate-400 line-through">₹{mrpTotal}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Store Discount Price</span>
-                    <span className="font-bold text-slate-900">₹{subtotal}</span>
-                  </div>
-                  {discountAmount > 0 && (
-                    <div className="flex justify-between text-emerald-700">
-                      <span>Coupon Savings</span>
-                      <span className="font-black">-₹{discountAmount}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between">
-                    <span>Delivery Charge</span>
-                    {deliveryCharge === 0 ? (
-                      <span className="text-emerald-600 font-black">FREE</span>
-                    ) : (
-                      <span className="font-bold text-slate-900">₹{deliveryCharge}</span>
-                    )}
-                  </div>
-                  <div className="border-t border-slate-200 pt-3 flex justify-between text-base font-black text-slate-900">
-                    <span>To Pay</span>
-                    <span className="text-green-700 text-lg">₹{totalAmount}</span>
-                  </div>
+                  {couponWarning && <p className="mt-2 text-xs font-medium text-orange-700">{couponWarning}</p>}
                 </div>
+              ) : (
+                <>
+                  <form onSubmit={submitCode} className="flex gap-2">
+                    <input
+                      value={code}
+                      onChange={(e) => {
+                        setCode(e.target.value.toUpperCase());
+                        setCodeError(null);
+                      }}
+                      placeholder="Enter coupon code"
+                      className="field h-10 flex-1 py-0 uppercase tracking-wide"
+                      aria-label="Coupon code"
+                    />
+                    <button type="submit" className="btn-ghost h-10 px-3 py-0" disabled={!code.trim()}>
+                      Apply
+                    </button>
+                  </form>
+                  {codeError && <p className="mt-1.5 text-xs font-medium text-rose-600">{codeError}</p>}
+                  {availableCoupons.length > 0 && (
+                    <ul className="mt-3 space-y-2">
+                      {availableCoupons.map((c) => {
+                        const short = c.minOrderValue - subtotal;
+                        return (
+                          <li key={c.id} className="flex items-center justify-between gap-3 rounded-xl border border-dashed border-line px-3.5 py-2.5">
+                            <div className="min-w-0">
+                              <p className="text-[13px] font-bold tracking-wide text-ink">{c.code}</p>
+                              <p className="text-xs text-ink-muted">{c.description}</p>
+                              {short > 0 && (
+                                <p className="mt-0.5 text-[11px] text-ink-faint">Add {formatINR(roundMoney(short))} more to unlock</p>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => {
+                                const r = applyCoupon(c.code);
+                                setCodeError(r.success ? null : r.message);
+                              }}
+                              disabled={short > 0}
+                              className="shrink-0 text-sm font-bold text-leaf-600 disabled:text-ink-faint"
+                            >
+                              Apply
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </>
+              )}
+            </section>
 
-                {totalSavings > 0 && (
-                  <div className="p-2.5 bg-emerald-50 rounded-xl text-center text-xs font-black text-emerald-800 border border-emerald-200">
-                    🎉 You are saving ₹{totalSavings} on this order!
+            {/* Bill */}
+            <section className="card px-4 py-4">
+              <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-ink">
+                <FileText className="h-4 w-4 text-ink-soft" /> Bill summary
+              </h2>
+              <dl className="tabular space-y-2 text-[13px]">
+                <div className="flex justify-between text-ink-soft">
+                  <dt>Items total</dt>
+                  <dd>
+                    {mrpTotal > subtotal && <span className="mr-1.5 text-ink-faint line-through">{formatINR(mrpTotal)}</span>}
+                    <span className="text-ink">{formatINR(subtotal)}</span>
+                  </dd>
+                </div>
+                <div className="flex justify-between text-ink-soft">
+                  <dt>Delivery charge</dt>
+                  <dd>
+                    {deliveryCharge === 0 ? (
+                      <>
+                        {settings.delivery_charge > 0 && (
+                          <span className="mr-1.5 text-ink-faint line-through">{formatINR(settings.delivery_charge)}</span>
+                        )}
+                        <span className="font-semibold text-leaf-600">FREE</span>
+                      </>
+                    ) : (
+                      <span className="text-ink">{formatINR(deliveryCharge)}</span>
+                    )}
+                  </dd>
+                </div>
+                {discountAmount > 0 && (
+                  <div className="flex justify-between text-leaf-700">
+                    <dt>Coupon ({appliedCoupon?.code})</dt>
+                    <dd>−{formatINR(discountAmount)}</dd>
                   </div>
                 )}
+                <div className="flex justify-between border-t border-line pt-3 text-[15px] font-bold text-ink">
+                  <dt>Grand total</dt>
+                  <dd>{formatINR(totalAmount)}</dd>
+                </div>
+              </dl>
+              {totalSavings > 0 && (
+                <p className="mt-3 rounded-xl bg-leaf-50 px-3 py-2 text-[13px] font-medium text-leaf-700">
+                  You save {formatINR(totalSavings)} compared to MRP
+                </p>
+              )}
+            </section>
 
-                {/* Checkout Trigger */}
-                <button
-                  onClick={handleProceedToCheckout}
-                  className="w-full py-3.5 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-extrabold text-sm rounded-2xl shadow-md shadow-green-700/20 transition flex items-center justify-center gap-2 active:scale-98"
-                >
-                  <span>Proceed to Checkout</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+            <section className="card px-4 py-4 text-xs leading-relaxed text-ink-muted">
+              <p className="mb-1 text-sm font-bold text-ink">Cancellation policy</p>
+              Orders can be cancelled until they are packed. Damaged or wrong items are replaced at your doorstep.{' '}
+              <Link href="/refund-policy" className="font-semibold text-leaf-600">
+                Read more
+              </Link>
+            </section>
+
+            {/* Desktop CTA */}
+            <div className="hidden md:block">
+              {blocker ? (
+                <p className="mb-2 text-[13px] font-medium text-orange-700">{blocker}</p>
+              ) : (
+                !status.isOpen && <p className="mb-2 text-[13px] text-ink-muted">Store is closed now — you can schedule delivery at checkout.</p>
+              )}
+              <button onClick={primary} disabled={!!blocker && isAuthenticated && !!defaultAddress} className="btn-primary h-14 w-full justify-between px-5 text-base">
+                <span className="tabular">{formatINR(totalAmount)}</span>
+                <span className="flex items-center gap-1">
+                  {primaryLabel} <ChevronRight className="h-5 w-5" />
+                </span>
+              </button>
             </div>
-          </div>
-        )}
+          </aside>
+        </div>
       </main>
+
+      {/* Mobile sticky footer */}
+      <div className="pb-safe fixed inset-x-0 bottom-0 z-40 border-t border-line bg-white shadow-bar md:hidden">
+        {isAuthenticated && defaultAddress && (
+          <button onClick={() => setPickerOpen(true)} className="flex w-full items-center gap-3 border-b border-line px-4 py-2.5 text-left">
+            <ShoppingBag className="h-4 w-4 shrink-0 text-ink-soft" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-semibold text-ink">
+                Delivering to {defaultAddress.address_type.charAt(0).toUpperCase() + defaultAddress.address_type.slice(1)}
+              </span>
+              <span className="block truncate text-xs text-ink-muted">
+                {defaultAddress.house_flat}, {defaultAddress.street_area}
+              </span>
+            </span>
+            <span className="text-[13px] font-semibold text-leaf-600">Change</span>
+          </button>
+        )}
+        {blocker ? (
+          <p className="bg-orange-50 px-4 py-2 text-xs font-medium text-orange-800">{blocker}</p>
+        ) : (
+          !status.isOpen && <p className="bg-sun-50 px-4 py-2 text-xs font-medium text-ink-soft">Store is closed now — you can schedule delivery at checkout.</p>
+        )}
+        <div className="px-3 py-3">
+          <button onClick={primary} disabled={!!blocker && isAuthenticated && !!defaultAddress} className="btn-primary h-14 w-full justify-between px-4">
+            <span className="text-left leading-tight">
+              <span className="tabular block text-[15px] font-bold">{formatINR(totalAmount)}</span>
+              <span className="block text-[11px] font-medium uppercase tracking-wide text-white/80">Total</span>
+            </span>
+            <span className="flex items-center gap-1 text-[15px]">
+              {primaryLabel} <ChevronRight className="h-5 w-5" />
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <AddressPicker open={pickerOpen} onClose={() => setPickerOpen(false)} />
     </div>
   );
 }

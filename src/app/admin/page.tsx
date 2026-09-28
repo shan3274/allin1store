@@ -2,49 +2,31 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
-import { useAuth } from '@/context/AuthContext';
 import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
 import { OrderStatus } from '@/types/database';
 import {
   TrendingUp,
-  Package,
-  ClipboardList,
   AlertTriangle,
   Users,
   CreditCard,
   Calculator,
   Plus,
   Tag,
-  ArrowRight,
-  Search,
-  Bell,
   Clock,
   CheckCircle2,
   Phone,
-  Power,
-  Zap,
-  ShoppingBag,
-  ExternalLink,
   ChevronRight,
   Truck,
   HelpCircle
 } from 'lucide-react';
 
 export default function AdminDashboardPage() {
-  const router = useRouter();
-  const { isAdmin } = useAuth();
-  const { orders, products, settings, supportTickets, updateOrderStatus, updateSettings } = useStore();
+  const { orders, products, settings, supportTickets, updateOrderStatus } = useStore();
   const { showToast } = useToast();
 
   const [activeTab, setActiveTab] = useState<'all' | 'new' | 'preparing' | 'ready' | 'dispatched'>('all');
-
-  if (!isAdmin) {
-    if (typeof window !== 'undefined') router.push('/admin/login');
-    return null;
-  }
 
   // Live Metrics
   const activeOrders = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'delivered');
@@ -53,9 +35,12 @@ export default function AdminDashboardPage() {
   const outForDeliveryOrders = orders.filter((o) => o.status === 'out_for_delivery');
   const deliveredOrders = orders.filter((o) => o.status === 'delivered');
 
-  const todayTurnover = orders
-    .filter((o) => o.status !== 'cancelled')
-    .reduce((sum, o) => sum + o.total_amount, 0);
+  const todayKey = new Date().toDateString();
+  const todayTurnover = Math.round(
+    orders
+      .filter((o) => o.status !== 'cancelled' && new Date(o.created_at).toDateString() === todayKey)
+      .reduce((sum, o) => sum + o.total_amount, 0)
+  );
 
   const lowStockItems = products.filter((p) => p.stock_quantity <= p.min_stock_alert && p.stock_quantity > 0);
   const outOfStockItems = products.filter((p) => p.stock_quantity === 0);
@@ -176,7 +161,7 @@ export default function AdminDashboardPage() {
             className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-5 shadow-sm space-y-2 hover:border-slate-700 transition"
           >
             <div className="flex items-center justify-between text-slate-400">
-              <span className="text-[11px] font-bold uppercase tracking-wider">Today's Sales</span>
+              <span className="text-[11px] font-bold uppercase tracking-wider">Today&apos;s Sales</span>
               <div className="w-7 h-7 rounded-lg bg-green-500/10 text-green-400 flex items-center justify-center">
                 <TrendingUp className="w-4 h-4" />
               </div>
@@ -249,7 +234,7 @@ export default function AdminDashboardPage() {
               ].map((tab) => (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id as any)}
+                  onClick={() => setActiveTab(tab.id as typeof activeTab)}
                   className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition ${
                     activeTab === tab.id
                       ? 'bg-green-600 text-white shadow-sm'

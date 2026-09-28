@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
-import { Truck, MapPin, Phone, Clock, CheckCircle2, ChevronRight, AlertCircle } from 'lucide-react';
+import { Truck, MapPin, Phone, CheckCircle2 } from 'lucide-react';
 
 export default function AdminDeliveryPage() {
   const { orders, settings, updateOrderStatus } = useStore();

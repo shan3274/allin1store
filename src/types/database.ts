@@ -43,6 +43,10 @@ export interface StoreSettings {
   is_store_open: boolean
   opening_time: string | null
   closing_time: string | null
+  /** Pincodes the store delivers to. Empty = no pincode restriction. */
+  serviceable_pincodes?: string[]
+  /** Typical door-to-door time shown to customers. */
+  delivery_eta_minutes?: number
   created_at: string
   updated_at: string
 }

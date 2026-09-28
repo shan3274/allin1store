@@ -3,7 +3,8 @@
 import React from 'react';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
-import { History, ShieldCheck, Clock, UserCheck } from 'lucide-react';
+import { formatRelative } from '@/lib/format';
+import { History, UserCheck } from 'lucide-react';
 
 export default function AdminAuditPage() {
   const { auditLogs } = useStore();
@@ -68,7 +69,7 @@ export default function AdminAuditPage() {
                     <td className="p-3.5 text-slate-400 text-xs">{log.reason || 'Standard operational task'}</td>
 
                     <td className="p-3.5 text-right text-slate-400 text-xs font-mono">
-                      {log.timestamp}
+                      {formatRelative(log.timestamp)}
                     </td>
                   </tr>
                 ))}

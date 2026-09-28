@@ -2,9 +2,9 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useAuth } from '@/context/AuthContext';
+import { usePathname, useRouter } from 'next/navigation';
 import { useStore } from '@/context/StoreContext';
+import { LogoMark } from './Logo';
 import {
   LayoutDashboard,
   Calculator,
@@ -22,19 +22,24 @@ import {
   Store,
   LogOut,
   ExternalLink,
-  Search,
-  Power,
   Menu,
-  X,
-  Plus
+  X
 } from 'lucide-react';
 
 export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { adminLogout, isAdmin } = useAuth();
+  const router = useRouter();
   const { settings, updateSettings, orders, products, supportTickets, notifications } = useStore();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [globalSearch, setGlobalSearch] = useState('');
+
+  const adminLogout = async () => {
+    try {
+      await fetch('/api/admin/logout', { method: 'POST' });
+    } finally {
+      router.replace('/admin/login');
+      router.refresh();
+    }
+  };
 
   const pendingOrdersCount = orders.filter((o) => o.status === 'pending' || o.status === 'confirmed').length;
   const lowStockCount = products.filter((p) => p.stock_quantity <= p.min_stock_alert).length;
@@ -156,7 +161,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
               <nav className="space-y-1">
                 {navLinks.map((link) => {
                   const Icon = link.icon;
-                  const isActive = pathname === link.href;
+                  const isActive = link.href === '/admin' ? pathname === '/admin' : pathname?.startsWith(link.href);
 
                   return (
                     <Link
@@ -165,7 +170,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
                       onClick={() => setMobileMenuOpen(false)}
                       className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold transition ${
                         isActive
-                          ? 'bg-green-600 text-white'
+                          ? 'bg-white/10 text-white'
                           : 'text-slate-400 hover:text-white hover:bg-slate-800'
                       }`}
                     >
@@ -188,6 +193,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
               <Link
                 href="/"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="w-full flex items-center justify-between px-3 py-2 bg-slate-800/80 rounded-xl text-xs font-bold text-slate-300"
               >
                 <span>Preview Store</span>
@@ -210,15 +216,13 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
           {/* Header Brand */}
           <div className="flex items-center justify-between">
             <Link href="/admin" className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-green-500 to-emerald-400 text-slate-950 flex items-center justify-center font-black shadow-md">
-                <Store className="w-5 h-5" />
-              </div>
+              <LogoMark className="w-9 h-9" />
               <div className="min-w-0">
                 <span className="font-black text-sm block leading-none truncate text-white">
                   {settings.store_name}
                 </span>
                 <span className="text-[10px] text-green-400 font-bold uppercase tracking-wider block mt-0.5">
-                  Kirana OS Portal
+                  Owner console
                 </span>
               </div>
             </Link>
@@ -227,7 +231,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
           {/* Store Open/Close Toggle Pill */}
           <div className="p-2.5 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs">
-              <div className={`w-2 h-2 rounded-full ${settings.is_store_open ? 'bg-emerald-400 animate-ping' : 'bg-rose-500'}`} />
+              <div className={`w-2 h-2 rounded-full ${settings.is_store_open ? 'bg-emerald-400' : 'bg-rose-500'}`} />
               <span className="font-bold text-slate-300">
                 {settings.is_store_open ? 'Store is Open' : 'Store is Closed'}
               </span>
@@ -246,6 +250,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
           <Link
             href="/"
             target="_blank"
+            rel="noopener noreferrer"
             className="flex items-center justify-between px-3 py-2 bg-slate-950 hover:bg-slate-800 rounded-xl text-xs font-bold text-slate-300 border border-slate-800 transition"
           >
             <span className="flex items-center gap-1.5">
@@ -258,7 +263,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
           <nav className="space-y-1">
             {navLinks.map((item) => {
               const Icon = item.icon;
-              const isActive = pathname === item.href;
+              const isActive = item.href === '/admin' ? pathname === '/admin' : pathname?.startsWith(item.href);
 
               return (
                 <Link
@@ -266,7 +271,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
                   href={item.href}
                   className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold transition ${
                     isActive
-                      ? 'bg-green-600 text-white shadow-md'
+                      ? 'bg-white/10 text-white'
                       : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                   }`}
                 >
@@ -291,7 +296,7 @@ export function AdminLayoutWrapper({ children }: { children: React.ReactNode }) 
             onClick={adminLogout}
             className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-xl transition"
           >
-            <LogOut className="w-4 h-4" /> Exit Store Admin
+            <LogOut className="w-4 h-4" /> Log out
           </button>
         </div>
       </aside>

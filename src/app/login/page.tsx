@@ -1,137 +1,102 @@
 'use client';
 
-import React, { useState, Suspense } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Navbar } from '@/components/Navbar';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
-import { Store, Phone, ShieldCheck, ArrowRight } from 'lucide-react';
+import { Logo } from '@/components/Logo';
+import { isValidIndianMobile } from '@/lib/format';
+import { safeRedirect } from '@/lib/safeRedirect';
 
 function LoginForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const redirect = searchParams.get('redirect') || '/';
-  const { loginWithPhone, loginWithGoogle } = useAuth();
+  const params = useSearchParams();
+  const redirect = safeRedirect(params.get('redirect'));
+  const { requestOtp, isAuthenticated, isHydrated } = useAuth();
+  const { settings } = useStore();
   const { showToast } = useToast();
 
   const [phone, setPhone] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSendOtp = async (e: React.FormEvent) => {
+  useEffect(() => {
+    if (isHydrated && isAuthenticated) router.replace(redirect);
+  }, [isHydrated, isAuthenticated, redirect, router]);
+
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!phone || phone.length < 10) {
-      showToast({
-        type: 'error',
-        title: 'Invalid Mobile Number',
-        message: 'Please enter a valid 10-digit Indian phone number.',
-      });
+    if (!isValidIndianMobile(phone)) {
+      setError('Enter a valid 10-digit mobile number');
       return;
     }
-
-    setIsSubmitting(true);
-    await loginWithPhone(phone, fullName || 'Kirana Customer');
-    router.push(`/verify-otp?phone=${encodeURIComponent(phone)}&redirect=${encodeURIComponent(redirect)}`);
-  };
-
-  const handleGoogleLogin = async () => {
-    setIsSubmitting(true);
-    await loginWithGoogle();
+    setSubmitting(true);
+    const code = requestOtp(phone);
+    // No SMS gateway is connected yet — surface the code on screen (test mode).
     showToast({
-      type: 'success',
-      title: 'Google Login',
-      message: 'Signed in securely with Google.',
+      type: 'info',
+      title: `Your ${settings.store_name} code is ${code}`,
+      message: 'Test mode: SMS delivery isn’t connected yet.',
+      duration: 12000,
     });
-    router.push(redirect);
+    router.push(`/verify-otp?redirect=${encodeURIComponent(redirect)}`);
   };
 
   return (
-    <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-2xs space-y-4">
-      <form onSubmit={handleSendOtp} className="space-y-4">
-        <div className="space-y-1">
-          <label className="text-xs font-bold text-slate-700">Mobile Number</label>
-          <div className="flex items-center bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-green-500">
-            <span className="px-3.5 text-xs font-black text-slate-500 border-r border-slate-200 bg-slate-100/60 py-3">
-              +91
-            </span>
-            <input
-              type="tel"
-              required
-              maxLength={10}
-              autoFocus
-              placeholder="9876543210"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value.replace(/\D/g, ''))}
-              className="w-full text-xs font-bold p-3 bg-transparent outline-none"
-            />
-          </div>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-xs font-bold text-slate-700">Full Name (Optional)</label>
-          <input
-            type="text"
-            placeholder="Rahul Sharma"
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            className="w-full text-xs font-semibold p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-green-500"
-          />
-        </div>
-
-        <button
-          type="submit"
-          disabled={isSubmitting || phone.length < 10}
-          className="w-full py-3.5 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:opacity-50 text-white font-black text-xs sm:text-sm rounded-2xl shadow-md transition flex items-center justify-center gap-2"
-        >
-          <span>Send OTP Verification</span>
-          <ArrowRight className="w-4 h-4" />
-        </button>
-      </form>
-
-      <div className="relative py-2 flex items-center justify-center">
-        <div className="border-t border-slate-200 w-full" />
-        <span className="absolute bg-white px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-          Or continue with
-        </span>
+    <form onSubmit={submit} noValidate className="w-full">
+      <label htmlFor="phone" className="sr-only">
+        Mobile number
+      </label>
+      <div className={`flex h-14 items-center rounded-2xl border bg-white px-4 transition focus-within:border-leaf-500 ${error ? 'border-rose-400' : 'border-line'}`}>
+        <span className="mr-3 border-r border-line pr-3 text-base font-semibold text-ink-soft">+91</span>
+        <input
+          id="phone"
+          type="tel"
+          inputMode="numeric"
+          autoComplete="tel-national"
+          autoFocus
+          maxLength={10}
+          placeholder="Enter mobile number"
+          value={phone}
+          onChange={(e) => {
+            setPhone(e.target.value.replace(/\D/g, ''));
+            setError(null);
+          }}
+          className="tabular h-full flex-1 bg-transparent text-lg font-semibold tracking-wide text-ink placeholder:text-base placeholder:font-normal placeholder:tracking-normal placeholder:text-ink-faint focus:outline-none"
+        />
       </div>
-
-      <button
-        onClick={handleGoogleLogin}
-        disabled={isSubmitting}
-        className="w-full py-3 bg-slate-50 hover:bg-slate-100 text-slate-800 font-bold text-xs rounded-2xl border border-slate-200 transition flex items-center justify-center gap-2"
-      >
-        <span className="text-base">🇬</span>
-        <span>Continue with Google</span>
+      {error && <p className="mt-2 text-left text-xs font-medium text-rose-600">{error}</p>}
+      <button type="submit" disabled={phone.length !== 10 || submitting} className="btn-primary mt-4 h-14 w-full text-base">
+        {submitting ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Continue'}
       </button>
-    </div>
+    </form>
   );
 }
 
 export default function LoginPage() {
+  const router = useRouter();
+  const { settings } = useStore();
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar />
-
-      <main className="max-w-md mx-auto w-full px-4 py-12 flex-1 flex flex-col justify-center space-y-6">
-        <div className="text-center space-y-2">
-          <div className="w-14 h-14 bg-gradient-to-tr from-green-700 to-emerald-500 text-white rounded-2xl flex items-center justify-center mx-auto shadow-md">
-            <Store className="w-7 h-7" />
-          </div>
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-            Welcome to Apni Kirana
-          </h1>
-          <p className="text-xs text-slate-500 font-medium">
-            Enter your mobile number to get OTP for quick grocery ordering
-          </p>
-        </div>
-
-        <Suspense fallback={<div className="bg-white rounded-3xl p-8 text-center text-xs text-slate-400">Loading form...</div>}>
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <div className="px-2 pt-2">
+        <button onClick={() => router.back()} className="flex h-11 w-11 items-center justify-center rounded-full hover:bg-canvas" aria-label="Go back">
+          <ArrowLeft className="h-5 w-5" />
+        </button>
+      </div>
+      <main className="mx-auto flex w-full max-w-sm flex-1 flex-col items-center px-6 pb-10 pt-6 text-center md:justify-center md:pt-0">
+        <Logo name={settings.store_name} />
+        <h1 className="mt-8 font-display text-3xl font-semibold tracking-tight text-ink">Your neighbourhood kirana, online</h1>
+        <p className="mb-8 mt-2 text-[15px] text-ink-muted">Sign in with your mobile number</p>
+        <Suspense fallback={<div className="h-[136px]" />}>
           <LoginForm />
         </Suspense>
-
-        <p className="text-[11px] text-center text-slate-400 font-medium">
-          By signing in, you agree to our Terms of Service & Privacy Policy.
+        <p className="mt-6 text-xs leading-relaxed text-ink-faint">
+          By continuing, you agree to our{' '}
+          <Link href="/terms" className="underline underline-offset-2">Terms of service</Link> &amp;{' '}
+          <Link href="/privacy" className="underline underline-offset-2">Privacy policy</Link>
         </p>
       </main>
     </div>

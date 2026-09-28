@@ -3,19 +3,21 @@
 import React, { use, useState } from 'react';
 import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
-import { useStore } from '@/context/StoreContext';
+import { STATUS_FLOW, useStore } from '@/context/StoreContext';
+import { PAYMENT_METHOD_LABEL, formatDateTime } from '@/lib/format';
+
+const NEXT_LABEL: Partial<Record<OrderStatus, string>> = {
+  confirmed: 'Accept order',
+  packed: 'Mark packed',
+  out_for_delivery: 'Send out for delivery',
+  delivered: 'Mark delivered',
+};
 import { useToast } from '@/context/ToastContext';
 import { OrderStatus } from '@/types/database';
 import {
   ArrowLeft,
-  CheckCircle2,
-  Clock,
-  MapPin,
   Phone,
-  AlertTriangle,
-  RotateCcw,
-  Printer,
-  ShieldCheck
+  Printer
 } from 'lucide-react';
 
 interface AdminOrderDetailPageProps {
@@ -32,6 +34,9 @@ export default function AdminOrderDetailPage({ params }: AdminOrderDetailPagePro
   const [reason, setReason] = useState('Out of stock items');
 
   const order = getOrderById(resolvedParams.id);
+  const flowIndex = order ? STATUS_FLOW.indexOf(order.status) : -1;
+  const nextStatus: OrderStatus | null =
+    flowIndex >= 0 && flowIndex < STATUS_FLOW.length - 1 ? STATUS_FLOW[flowIndex + 1] : null;
 
   if (!order) {
     return (
@@ -100,26 +105,29 @@ export default function AdminOrderDetailPage({ params }: AdminOrderDetailPagePro
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1 font-medium">
-                Placed on {new Date(order.created_at).toLocaleString()}
+                Placed {formatDateTime(order.created_at)}
+                {order.delivery_slot ? ` · Slot: ${order.delivery_slot}` : ' · Deliver now'}
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5 font-medium">
+                {PAYMENT_METHOD_LABEL[order.payment_method] ?? order.payment_method} ·{' '}
+                <span className={order.payment_status === 'paid' ? 'text-emerald-400' : 'text-amber-300'}>
+                  {order.payment_status === 'pending' ? 'collect on delivery' : order.payment_status}
+                </span>
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {(['confirmed', 'packed', 'out_for_delivery', 'delivered'] as OrderStatus[]).map(
-                (status) => (
-                  <button
-                    key={status}
-                    onClick={() => handleStatusChange(status)}
-                    className={`px-3 py-1.5 rounded-xl font-bold text-xs capitalize transition ${
-                      order.status === status
-                        ? 'bg-green-600 text-white shadow-sm'
-                        : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-700'
-                    }`}
-                  >
-                    Mark {status.replace(/_/g, ' ')}
-                  </button>
-                )
+              {nextStatus && (
+                <button
+                  onClick={() => handleStatusChange(nextStatus)}
+                  className="px-4 py-2 rounded-xl font-bold text-xs bg-emerald-600 hover:bg-emerald-500 text-white transition"
+                >
+                  {NEXT_LABEL[nextStatus]}
+                </button>
               )}
+              <span className="px-3 py-1.5 rounded-xl text-xs font-bold capitalize bg-slate-900 text-slate-300 border border-slate-700">
+                {order.status.replace(/_/g, ' ')}
+              </span>
               {order.status !== 'cancelled' && order.status !== 'delivered' && (
                 <button
                   onClick={() => setCancelModal(true)}

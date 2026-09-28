@@ -4,16 +4,11 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
+import { formatRelative } from '@/lib/format';
 import { useToast } from '@/context/ToastContext';
 import {
   ClipboardList,
-  Search,
-  CheckCircle2,
-  Clock,
-  ChevronRight,
-  Filter,
-  Truck,
-  RotateCcw
+  Search
 } from 'lucide-react';
 import { OrderStatus } from '@/types/database';
 
@@ -134,7 +129,7 @@ export default function AdminOrdersListPage() {
                           #{ord.order_number}
                         </Link>
                         <span className="text-[10px] text-slate-500 block">
-                          {new Date(ord.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {formatRelative(ord.created_at)}
                         </span>
                       </td>
 

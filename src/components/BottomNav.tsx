@@ -3,78 +3,86 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Grid, ShoppingBag, ClipboardList, User } from 'lucide-react';
+import { ArrowRight, House, LayoutGrid, ReceiptText, ShoppingBasket, UserRound } from 'lucide-react';
 import { useCart } from '@/context/CartContext';
+import { formatINR } from '@/lib/format';
+import { useIsClient } from '@/lib/useIsClient';
+
+const NAV_HIDDEN = ['/admin', '/login', '/verify-otp', '/checkout', '/order/success', '/product', '/cart'];
+const CART_BAR_HIDDEN = NAV_HIDDEN;
+
+const LINKS = [
+  { label: 'Home', href: '/', icon: House },
+  { label: 'Aisles', href: '/categories', icon: LayoutGrid },
+  { label: 'Orders', href: '/orders', icon: ReceiptText },
+  { label: 'Account', href: '/profile', icon: UserRound },
+];
 
 export function BottomNav() {
-  const pathname = usePathname();
+  const pathname = usePathname() || '/';
   const { totalItems, totalAmount } = useCart();
+  const isClient = useIsClient();
 
-  // Hide on admin routes to prevent mixing owner with customer bottom navigation
-  if (pathname?.startsWith('/admin')) {
-    return null;
-  }
-
-  const links = [
-    { label: 'Store', href: '/', icon: Home },
-    { label: 'Categories', href: '/categories', icon: Grid },
-    { label: 'Orders', href: '/orders', icon: ClipboardList },
-    { label: 'Profile', href: '/profile', icon: User },
-  ];
+  const hiddenFor = (list: string[]) => list.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  const showNav = !hiddenFor(NAV_HIDDEN);
+  const showCartBar = isClient && totalItems > 0 && !hiddenFor(CART_BAR_HIDDEN);
 
   return (
     <>
-      {/* Floating Sticky Cart Bar on Mobile when items exist */}
-      {totalItems > 0 && pathname !== '/cart' && pathname !== '/checkout' && !pathname?.startsWith('/order/') && (
-        <div className="md:hidden fixed bottom-16 left-3 right-3 z-40 animate-slide-up">
+      {showCartBar && (
+        <div className={`fixed inset-x-4 z-40 animate-slide-up md:hidden ${showNav ? 'bottom-[76px]' : 'bottom-4'}`}>
           <Link
             href="/cart"
-            className="flex items-center justify-between bg-gradient-to-r from-green-700 via-green-600 to-emerald-600 text-white p-3 rounded-2xl shadow-xl shadow-green-900/30 border border-green-500/30"
+            className="flex items-center justify-between rounded-full bg-ink py-2 pl-2 pr-5 text-white shadow-pop"
           >
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-white/20 backdrop-blur-xs flex items-center justify-center font-black text-xs text-yellow-300">
-                {totalItems}
-              </div>
-              <div>
-                <span className="text-xs font-black block leading-none">
-                  {totalItems} {totalItems === 1 ? 'item' : 'items'} in basket
+            <span className="flex items-center gap-3">
+              <span className="relative flex h-10 w-10 items-center justify-center rounded-full bg-sun-400 text-ink">
+                <ShoppingBasket className="h-5 w-5" />
+                <span className="tabular absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-leaf-500 px-1 text-[11px] font-bold text-white">
+                  {totalItems}
                 </span>
-                <span className="text-[11px] text-green-100 font-semibold leading-tight block mt-0.5">
-                  ₹{totalAmount} • Instant 25m Delivery
+              </span>
+              <span className="leading-tight">
+                <span className="tabular block text-[15px] font-semibold">{formatINR(totalAmount)}</span>
+                <span className="block text-xs text-white/60">
+                  {totalItems} item{totalItems > 1 ? 's' : ''} in basket
                 </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-1 bg-yellow-400 text-slate-950 font-black text-xs px-3.5 py-1.5 rounded-xl shadow-xs">
-              <span>View Cart</span>
-              <span className="text-sm">→</span>
-            </div>
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-sm font-semibold">
+              Checkout <ArrowRight className="h-4 w-4" />
+            </span>
           </Link>
         </div>
       )}
 
-      {/* Main Bottom Navigation Bar */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-md border-t border-slate-200 py-1.5 px-4 flex justify-around items-center shadow-2xl safe-area-pb">
-        {links.map((link) => {
-          const Icon = link.icon;
-          const isActive = pathname === link.href || (link.href !== '/' && pathname?.startsWith(link.href));
-          return (
-            <Link
-              key={link.href}
-              href={link.href}
-              className={`flex flex-col items-center relative py-1 px-3 rounded-xl transition text-[11px] font-bold ${
-                isActive
-                  ? 'text-green-700 scale-105'
-                  : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              <div className="relative">
-                <Icon className={`w-5 h-5 mb-0.5 ${isActive ? 'stroke-[2.5px]' : 'stroke-2'}`} />
-              </div>
-              <span className="leading-tight">{link.label}</span>
-            </Link>
-          );
-        })}
-      </nav>
+      {showNav && (
+        <nav
+          className="pb-safe fixed inset-x-0 bottom-0 z-40 border-t border-line bg-white/95 backdrop-blur md:hidden"
+          aria-label="Primary"
+        >
+          <div className="flex h-16 items-stretch justify-around">
+            {LINKS.map(({ label, href, icon: Icon }) => {
+              const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition ${
+                    active ? 'text-leaf-700' : 'text-ink-muted'
+                  }`}
+                  aria-current={active ? 'page' : undefined}
+                >
+                  <span className={`flex h-7 w-12 items-center justify-center rounded-full transition ${active ? 'bg-leaf-100' : ''}`}>
+                    <Icon className="h-5 w-5" strokeWidth={active ? 2.3 : 1.8} />
+                  </span>
+                  {label}
+                </Link>
+              );
+            })}
+          </div>
+        </nav>
+      )}
     </>
   );
 }

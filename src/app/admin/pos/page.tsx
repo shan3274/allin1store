@@ -2,19 +2,18 @@
 
 import React, { useState } from 'react';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
-import { useStore } from '@/context/StoreContext';
+import { OrderError, useStore } from '@/context/StoreContext';
+import { roundMoney } from '@/lib/format';
 import { useToast } from '@/context/ToastContext';
 import { Product } from '@/types/database';
 import {
   Calculator,
-  Search,
   Plus,
   Minus,
   Trash2,
   Receipt,
   CheckCircle2,
   Printer,
-  Sparkles,
   Barcode
 } from 'lucide-react';
 
@@ -24,10 +23,11 @@ interface POSItem {
 }
 
 export default function CounterPOSPage() {
-  const { products, updateStock, createOrder } = useStore();
+  const { products, createOrder } = useStore();
   const { showToast } = useToast();
 
   const [search, setSearch] = useState('');
+  const [payMode, setPayMode] = useState<'cash_pos' | 'upi'>('cash_pos');
   const [cart, setCart] = useState<POSItem[]>([]);
   const [lastReceipt, setLastReceipt] = useState<{
     id: string;
@@ -38,9 +38,10 @@ export default function CounterPOSPage() {
 
   const filteredProducts = products.filter(
     (p) =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
+      p.is_active &&
+      (p.name.toLowerCase().includes(search.toLowerCase()) ||
       (p.barcode && p.barcode.includes(search)) ||
-      (p.sku && p.sku.toLowerCase().includes(search.toLowerCase()))
+      (p.sku && p.sku.toLowerCase().includes(search.toLowerCase())))
   );
 
   const addToCart = (product: Product) => {
@@ -78,13 +79,14 @@ export default function CounterPOSPage() {
       return;
     }
     setCart((prev) =>
-      prev.map((i) => (i.product.id === productId ? { ...i, quantity } : i))
+      prev.map((i) =>
+        i.product.id === productId ? { ...i, quantity: Math.min(quantity, i.product.stock_quantity) } : i
+      )
     );
   };
 
-  const totalAmount = cart.reduce(
-    (sum, i) => sum + Number(i.product.selling_price) * i.quantity,
-    0
+  const totalAmount = roundMoney(
+    cart.reduce((sum, i) => sum + Number(i.product.selling_price) * i.quantity, 0)
   );
 
   const handleCheckoutBill = () => {
@@ -101,20 +103,30 @@ export default function CounterPOSPage() {
       created_at: new Date().toISOString(),
     }));
 
-    const newOrder = createOrder({
-      order_type: 'pos_counter',
-      status: 'delivered',
-      subtotal: totalAmount,
-      delivery_charge: 0,
-      discount_amount: 0,
-      total_amount: totalAmount,
-      payment_method: 'cash_pos',
-      payment_status: 'paid',
-      shipping_name: 'Counter Walk-in Customer',
-      shipping_phone: 'Walk-in',
-      shipping_address: 'Direct Counter Sale',
-      items: orderPayload,
-    });
+    let newOrder;
+    try {
+      newOrder = createOrder({
+        order_type: 'pos_counter',
+        status: 'delivered',
+        subtotal: totalAmount,
+        delivery_charge: 0,
+        discount_amount: 0,
+        total_amount: totalAmount,
+        payment_method: payMode,
+        payment_status: 'paid',
+        shipping_name: 'Walk-in customer',
+        shipping_phone: null,
+        shipping_address: 'Counter sale',
+        items: orderPayload,
+      });
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Could not bill',
+        message: err instanceof OrderError ? err.message : 'Please try again.',
+      });
+      return;
+    }
 
     setLastReceipt({
       id: newOrder.id,
@@ -126,8 +138,8 @@ export default function CounterPOSPage() {
     setCart([]);
     showToast({
       type: 'success',
-      title: 'Counter Sale Billed!',
-      message: `Bill #${newOrder.order_number} recorded & stock deducted.`,
+      title: `Bill #${newOrder.order_number} saved`,
+      message: 'Stock updated.',
     });
   };
 
@@ -306,12 +318,30 @@ export default function CounterPOSPage() {
               <span className="text-green-400 text-2xl font-black">₹{totalAmount}</span>
             </div>
 
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                ['cash_pos', 'Cash'],
+                ['upi', 'UPI'],
+              ] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  onClick={() => setPayMode(id)}
+                  className={`py-2 rounded-xl text-xs font-bold border transition ${
+                    payMode === id
+                      ? 'bg-white text-slate-900 border-white'
+                      : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <button
               disabled={cart.length === 0}
               onClick={handleCheckoutBill}
-              className="w-full py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:opacity-40 text-white font-black rounded-2xl shadow-lg transition flex items-center justify-center gap-2 text-sm active:scale-98"
+              className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-black rounded-2xl shadow-lg transition flex items-center justify-center gap-2 text-sm active:scale-98"
             >
-              <Receipt className="w-4 h-4" /> Collect Cash & Generate Receipt (₹{totalAmount})
+              <Receipt className="w-4 h-4" /> Collect ₹{totalAmount} {payMode === 'upi' ? 'via UPI' : 'in cash'} & bill
             </button>
           </div>
         </div>

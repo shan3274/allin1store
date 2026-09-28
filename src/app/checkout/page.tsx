@@ -1,451 +1,319 @@
 'use client';
 
-import React, { useState } from 'react';
-import Link from 'next/link';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Navbar } from '@/components/Navbar';
+import { Banknote, Check, ChevronRight, Loader2, MapPin, QrCode, ShieldCheck } from 'lucide-react';
+import { SiteHeader } from '@/components/SiteHeader';
+import { PageHeader } from '@/components/ui/PageHeader';
+import { RequireAuth } from '@/components/ui/RequireAuth';
+import { ProductImage } from '@/components/ui/ProductImage';
+import { AddressPicker } from '@/components/AddressPicker';
 import { useCart } from '@/context/CartContext';
 import { useAuth } from '@/context/AuthContext';
-import { useStore } from '@/context/StoreContext';
+import { OrderError, useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
-import {
-  MapPin,
-  Clock,
-  CreditCard,
-  Banknote,
-  CheckCircle2,
-  ArrowLeft,
-  ShieldCheck,
-  Plus,
-  AlertCircle
-} from 'lucide-react';
+import { formatINR, roundMoney } from '@/lib/format';
+import { getDeliverySlots, getStoreStatus } from '@/lib/storeHours';
+import type { PaymentMethod } from '@/types/database';
 
-export default function CheckoutPage() {
+const INSTRUCTIONS = ['Don’t ring the bell', 'Leave at the door', 'Avoid calling', 'Pet at home'];
+
+const PAYMENT_OPTIONS: { id: PaymentMethod; title: string; body: string; icon: typeof Banknote }[] = [
+  { id: 'upi', title: 'UPI on delivery', body: 'Scan the store QR with any UPI app when your order arrives', icon: QrCode },
+  { id: 'cod', title: 'Cash on delivery', body: 'Pay the rider in cash at your door', icon: Banknote },
+];
+
+function CheckoutView() {
   const router = useRouter();
-  const { items, totalAmount, subtotal, deliveryCharge, discountAmount, clearCart } = useCart();
-  const { addresses, defaultAddress, user, saveAddress, setDefaultAddress } = useAuth();
+  const { items, subtotal, deliveryCharge, discountAmount, totalAmount, appliedCoupon, clearCart, meetsMinOrder, minOrderAmount, unavailableItems, totalItems } =
+    useCart();
+  const { user, addresses, defaultAddress } = useAuth();
   const { createOrder, settings } = useStore();
   const { showToast } = useToast();
 
-  const [selectedAddressId, setSelectedAddressId] = useState<string>(defaultAddress?.id || '');
-  const [selectedSlot, setSelectedSlot] = useState<string>('asap');
-  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'cod' | 'card'>('upi');
-  const [deliveryNotes, setDeliveryNotes] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [addressId, setAddressId] = useState<string | null>(defaultAddress?.id ?? null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [slots] = useState(() => getDeliverySlots(settings));
+  const [slotId, setSlotId] = useState<string>(() => slots[0]?.id ?? '');
+  const [chips, setChips] = useState<string[]>([]);
+  const [note, setNote] = useState('');
+  const [payment, setPayment] = useState<PaymentMethod>('upi');
+  const [placing, setPlacing] = useState(false);
+  const placed = useRef(false);
 
-  // Address add form modal state
-  const [showAddAddress, setShowAddAddress] = useState(false);
-  const [newAddrName, setNewAddrName] = useState(user?.full_name || '');
-  const [newAddrPhone, setNewAddrPhone] = useState(user?.phone || '');
-  const [newAddrHouse, setNewAddrHouse] = useState('');
-  const [newAddrStreet, setNewAddrStreet] = useState('');
-  const [newAddrType, setNewAddrType] = useState<'home' | 'work' | 'other'>('home');
+  const address = addresses.find((a) => a.id === addressId) ?? defaultAddress;
+  const slot = slots.find((s) => s.id === slotId);
+  const storeStatus = getStoreStatus(settings);
 
-  const selectedAddr = addresses.find((a) => a.id === selectedAddressId) || defaultAddress;
+  useEffect(() => {
+    if (!addressId && defaultAddress) setAddressId(defaultAddress.id);
+  }, [defaultAddress, addressId]);
 
-  const handleSaveNewAddress = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newAddrHouse || !newAddrStreet) return;
+  useEffect(() => {
+    if (items.length === 0 && !placed.current) router.replace('/cart');
+  }, [items.length, router]);
 
-    saveAddress({
-      name: newAddrName || 'Customer',
-      phone: newAddrPhone || '+91 98765 43210',
-      house_flat: newAddrHouse,
-      street_area: newAddrStreet,
-      landmark: 'Near Main Market',
-      city: 'Ghaziabad',
-      pincode: '201001',
-      address_type: newAddrType,
-      is_default: true,
-    });
+  const blocker = useMemo(() => {
+    if (!address) return 'Add a delivery address';
+    if (settings.serviceable_pincodes?.length && !settings.serviceable_pincodes.includes(address.pincode))
+      return `We don’t deliver to ${address.pincode} yet. Choose another address.`;
+    if (!slot) return 'No delivery slots available right now';
+    if (slot.id === 'asap' && !storeStatus.isOpen) return storeStatus.message;
+    if (unavailableItems.length) return 'Some items are out of stock. Go back to your cart to update.';
+    if (!meetsMinOrder) return `Minimum order is ${formatINR(minOrderAmount)}. Add ${formatINR(roundMoney(minOrderAmount - subtotal))} more.`;
+    return null;
+  }, [address, settings, slot, storeStatus, unavailableItems, meetsMinOrder, minOrderAmount, subtotal]);
 
-    setShowAddAddress(false);
-    showToast({
-      type: 'success',
-      title: 'Address Saved',
-      message: 'New delivery address added successfully.',
-    });
-  };
-
-  const handlePlaceOrder = async () => {
-    if (items.length === 0) {
-      router.push('/cart');
-      return;
-    }
-
-    if (!selectedAddr) {
-      showToast({
-        type: 'error',
-        title: 'Missing Address',
-        message: 'Please choose or add a delivery address.',
-      });
-      return;
-    }
-
-    setIsProcessing(true);
-
+  const placeOrder = async () => {
+    if (blocker || !address || !slot || placing) return;
+    setPlacing(true);
     try {
-      // Simulate real gateway processing
-      await new Promise((resolve) => setTimeout(resolve, 800));
-
-      const orderPayload = items.map((i) => ({
-        id: `oi-${Date.now()}-${Math.random()}`,
-        order_id: '',
-        product_id: i.product.id,
-        product_name: i.product.name,
-        quantity: i.quantity,
-        unit_price: Number(i.product.selling_price),
-        total_price: Number(i.product.selling_price) * i.quantity,
-        created_at: new Date().toISOString(),
-      }));
-
-      const newOrder = createOrder({
-        user_id: user?.id || 'guest',
+      const instructions = [...chips, note.trim()].filter(Boolean).join(' · ');
+      const order = createOrder({
+        user_id: user?.id ?? null,
+        order_type: 'online_delivery',
         subtotal,
         delivery_charge: deliveryCharge,
         discount_amount: discountAmount,
         total_amount: totalAmount,
-        payment_method: paymentMethod,
-        payment_status: paymentMethod === 'cod' ? 'pending' : 'paid',
-        shipping_name: selectedAddr.name,
-        shipping_phone: selectedAddr.phone,
-        shipping_address: `${selectedAddr.house_flat}, ${selectedAddr.street_area}`,
-        shipping_city: selectedAddr.city,
-        shipping_pincode: selectedAddr.pincode,
-        notes: deliveryNotes ? `${deliveryNotes} (Slot: ${selectedSlot})` : `Slot: ${selectedSlot}`,
-        items: orderPayload,
+        payment_method: payment,
+        payment_status: 'pending',
+        shipping_name: address.name,
+        shipping_phone: address.phone,
+        shipping_address: [address.house_flat, address.street_area, address.landmark].filter(Boolean).join(', '),
+        shipping_city: address.city,
+        shipping_pincode: address.pincode,
+        delivery_slot: slot.id === 'asap' ? null : `${slot.label}, ${slot.sublabel}`,
+        notes: [appliedCoupon ? `Coupon ${appliedCoupon.code}` : '', instructions].filter(Boolean).join(' | ') || null,
+        items: items.map((i, idx) => ({
+          id: `oi-${Date.now().toString(36)}-${idx}`,
+          order_id: '',
+          product_id: i.product.id,
+          product_name: `${i.product.name}${i.product.weight_volume ? ` (${i.product.weight_volume})` : ''}`,
+          quantity: i.quantity,
+          unit_price: Number(i.product.selling_price),
+          total_price: roundMoney(Number(i.product.selling_price) * i.quantity),
+          created_at: new Date().toISOString(),
+        })),
       });
-
+      placed.current = true;
       clearCart();
-      showToast({
-        type: 'success',
-        title: 'Order Confirmed!',
-        message: `Order #${newOrder.order_number} received by Kirana store.`,
-      });
-
-      router.push(`/order/success/${newOrder.id}`);
+      router.replace(`/order/success/${order.id}`);
     } catch (err) {
       showToast({
         type: 'error',
-        title: 'Order Failed',
-        message: 'Unable to process checkout. Please try again.',
+        title: 'Couldn’t place your order',
+        message: err instanceof OrderError ? err.message : 'Please try again in a moment.',
       });
-      setIsProcessing(false);
+      setPlacing(false);
     }
   };
 
+  if (items.length === 0) return null;
+
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar />
-
-      <main className="max-w-4xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6 flex-1">
-        <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
-          <Link href="/cart" className="hover:text-green-700 flex items-center gap-1">
-            <ArrowLeft className="w-3.5 h-3.5" /> Back to Basket
-          </Link>
-        </div>
-
-        <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
-          Checkout & Order Confirmation
-        </h1>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: Address, Slot, Payment */}
-          <div className="lg:col-span-7 space-y-4">
-            {/* 1. Delivery Address Card */}
-            <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-2xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <MapPin className="w-5 h-5 text-green-600" />
-                  <h3 className="font-extrabold text-slate-900 text-sm">1. Delivery Address</h3>
+    <main className="mx-auto w-full max-w-5xl flex-1 px-3 pb-40 pt-3 md:px-6 md:pb-12 md:pt-2">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_360px] md:gap-6">
+        <div className="min-w-0 space-y-3">
+          {/* Address */}
+          <section className="card px-4 py-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-ink">Delivery address</h2>
+              <button onClick={() => setPickerOpen(true)} className="text-sm font-semibold text-leaf-600">
+                {address ? 'Change' : 'Add'}
+              </button>
+            </div>
+            {address ? (
+              <div className="flex gap-3">
+                <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-ink-soft" />
+                <div className="text-[13px] leading-relaxed">
+                  <p className="font-semibold capitalize text-ink">
+                    {address.address_type} · {address.name}
+                  </p>
+                  <p className="text-ink-muted">
+                    {address.house_flat}, {address.street_area}
+                    {address.landmark ? `, ${address.landmark}` : ''}, {address.city} {address.pincode}
+                  </p>
+                  <p className="text-ink-muted">{address.phone}</p>
                 </div>
-                <button
-                  onClick={() => setShowAddAddress(true)}
-                  className="text-xs font-bold text-green-700 hover:underline flex items-center gap-1"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add New
-                </button>
               </div>
+            ) : (
+              <button onClick={() => setPickerOpen(true)} className="btn-secondary w-full">
+                Add delivery address
+              </button>
+            )}
+          </section>
 
-              {/* Saved Addresses Selector */}
-              <div className="space-y-2">
-                {addresses.map((addr) => (
-                  <div
-                    key={addr.id}
-                    onClick={() => setSelectedAddressId(addr.id)}
-                    className={`p-3.5 rounded-2xl border cursor-pointer transition flex items-start gap-3 ${
-                      (selectedAddressId ? selectedAddressId === addr.id : addr.is_default)
-                        ? 'border-green-600 bg-green-50/70 ring-1 ring-green-600'
-                        : 'border-slate-200 hover:border-slate-300'
+          {/* Slot */}
+          <section className="card px-4 py-4">
+            <h2 className="mb-3 text-sm font-bold text-ink">Delivery time</h2>
+            {slots.length === 0 ? (
+              <p className="text-[13px] text-ink-muted">No slots available. Please try again later.</p>
+            ) : (
+              <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1">
+                {slots.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setSlotId(s.id)}
+                    className={`shrink-0 rounded-xl border px-4 py-2.5 text-left transition ${
+                      s.id === slotId ? 'border-leaf-500 bg-leaf-50/70' : 'border-line hover:border-ink-faint'
                     }`}
                   >
-                    <input
-                      type="radio"
-                      name="selected_address"
-                      checked={
-                        selectedAddressId ? selectedAddressId === addr.id : addr.is_default
-                      }
-                      onChange={() => setSelectedAddressId(addr.id)}
-                      className="mt-1 text-green-600 focus:ring-green-500"
-                    />
-                    <div className="text-xs">
-                      <span className="font-black uppercase tracking-wider text-green-800 bg-green-200/60 px-1.5 py-0.5 rounded text-[10px]">
-                        {addr.address_type}
-                      </span>
-                      <p className="font-bold text-slate-900 mt-1">{addr.name} • {addr.phone}</p>
-                      <p className="text-slate-600 mt-0.5 leading-relaxed">
-                        {addr.house_flat}, {addr.street_area}, {addr.city} - {addr.pincode}
-                      </p>
-                    </div>
-                  </div>
+                    <span className={`block text-[13px] font-bold ${s.id === slotId ? 'text-leaf-700' : 'text-ink'}`}>{s.label}</span>
+                    <span className="block text-xs text-ink-muted">{s.sublabel}</span>
+                  </button>
                 ))}
               </div>
+            )}
+          </section>
+
+          {/* Instructions */}
+          <section className="card px-4 py-4">
+            <h2 className="mb-3 text-sm font-bold text-ink">Delivery instructions</h2>
+            <div className="flex flex-wrap gap-2">
+              {INSTRUCTIONS.map((c) => {
+                const on = chips.includes(c);
+                return (
+                  <button
+                    key={c}
+                    onClick={() => setChips(on ? chips.filter((x) => x !== c) : [...chips, c])}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] transition ${
+                      on ? 'border-leaf-500 bg-leaf-50 font-medium text-leaf-700' : 'border-line text-ink-soft'
+                    }`}
+                    aria-pressed={on}
+                  >
+                    {on && <Check className="h-3.5 w-3.5" />} {c}
+                  </button>
+                );
+              })}
             </div>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 200))}
+              rows={2}
+              placeholder="Anything else for the rider? (optional)"
+              className="field mt-3 resize-none"
+            />
+          </section>
 
-            {/* 2. Delivery Slot Card */}
-            <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-2xs space-y-3">
-              <div className="flex items-center gap-2">
-                <Clock className="w-5 h-5 text-green-600" />
-                <h3 className="font-extrabold text-slate-900 text-sm">2. Delivery Preference</h3>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setSelectedSlot('asap')}
-                  className={`p-3 rounded-2xl border text-left font-bold transition ${
-                    selectedSlot === 'asap'
-                      ? 'border-green-600 bg-green-50 text-green-900 ring-1 ring-green-600'
-                      : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="block font-black text-sm">⚡ ASAP Delivery</span>
-                  <span className="text-[11px] text-slate-500 block mt-0.5">25–35 minutes</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedSlot('evening')}
-                  className={`p-3 rounded-2xl border text-left font-bold transition ${
-                    selectedSlot === 'evening'
-                      ? 'border-green-600 bg-green-50 text-green-900 ring-1 ring-green-600'
-                      : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="block font-black text-sm">🌙 Evening Slot</span>
-                  <span className="text-[11px] text-slate-500 block mt-0.5">06:00 PM – 08:00 PM</span>
-                </button>
-              </div>
-
-              {/* Delivery Instructions */}
-              <input
-                type="text"
-                placeholder="Drop at door / Ring bell instructions..."
-                value={deliveryNotes}
-                onChange={(e) => setDeliveryNotes(e.target.value)}
-                className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-1 focus:ring-green-500"
-              />
-            </div>
-
-            {/* 3. Payment Method Card */}
-            <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-2xs space-y-3">
-              <div className="flex items-center gap-2">
-                <CreditCard className="w-5 h-5 text-green-600" />
-                <h3 className="font-extrabold text-slate-900 text-sm">3. Payment Option</h3>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <label className="p-3 rounded-2xl border border-slate-200 flex items-center justify-between cursor-pointer hover:bg-slate-50">
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="radio"
-                      name="payment_method"
-                      checked={paymentMethod === 'upi'}
-                      onChange={() => setPaymentMethod('upi')}
-                      className="text-green-600 focus:ring-green-500"
-                    />
-                    <div>
-                      <span className="font-black text-slate-900 block">UPI Instant Payment (GPay / PhonePe / Paytm)</span>
-                      <span className="text-[11px] text-slate-500">Fastest checkout with instant verification</span>
-                    </div>
-                  </div>
-                  <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-black text-[10px]">FAST</span>
-                </label>
-
-                <label className="p-3 rounded-2xl border border-slate-200 flex items-center justify-between cursor-pointer hover:bg-slate-50">
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="radio"
-                      name="payment_method"
-                      checked={paymentMethod === 'cod'}
-                      onChange={() => setPaymentMethod('cod')}
-                      className="text-green-600 focus:ring-green-500"
-                    />
-                    <div>
-                      <span className="font-black text-slate-900 block">Cash on Delivery (COD)</span>
-                      <span className="text-[11px] text-slate-500">Pay cash or scan QR when delivery partner arrives</span>
-                    </div>
-                  </div>
-                  <Banknote className="w-5 h-5 text-slate-400" />
-                </label>
-
-                <label className="p-3 rounded-2xl border border-slate-200 flex items-center justify-between cursor-pointer hover:bg-slate-50">
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="radio"
-                      name="payment_method"
-                      checked={paymentMethod === 'card'}
-                      onChange={() => setPaymentMethod('card')}
-                      className="text-green-600 focus:ring-green-500"
-                    />
-                    <div>
-                      <span className="font-black text-slate-900 block">Credit / Debit Card / Netbanking</span>
-                      <span className="text-[11px] text-slate-500">Visa, Mastercard, RuPay, Maestro</span>
-                    </div>
-                  </div>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column: Order Summary & Place CTA */}
-          <div className="lg:col-span-5 space-y-4">
-            <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-2xs space-y-4">
-              <h3 className="font-extrabold text-slate-900 text-sm border-b border-slate-100 pb-2">
-                Order Summary ({items.length} items)
-              </h3>
-
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-1 divide-y divide-slate-100">
-                {items.map((i) => (
-                  <div key={i.product.id} className="pt-1.5 flex justify-between text-xs">
-                    <span className="truncate max-w-[180px] text-slate-800 font-semibold">
-                      {i.quantity} × {i.product.name}
+          {/* Payment */}
+          <section className="card px-4 py-4">
+            <h2 className="mb-3 text-sm font-bold text-ink">Payment method</h2>
+            <div className="space-y-2" role="radiogroup">
+              {PAYMENT_OPTIONS.map(({ id, title, body, icon: Icon }) => {
+                const on = payment === id;
+                return (
+                  <button
+                    key={id}
+                    role="radio"
+                    aria-checked={on}
+                    onClick={() => setPayment(id)}
+                    className={`flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
+                      on ? 'border-leaf-500 bg-leaf-50/60' : 'border-line hover:border-ink-faint'
+                    }`}
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-canvas">
+                      <Icon className="h-[18px] w-[18px] text-ink-soft" />
                     </span>
-                    <span className="font-bold text-slate-900">
-                      ₹{Number(i.product.selling_price) * i.quantity}
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-ink">{title}</span>
+                      <span className="block text-xs text-ink-muted">{body}</span>
                     </span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="border-t border-slate-200 pt-3 space-y-2 text-xs text-slate-600 font-semibold">
-                <div className="flex justify-between">
-                  <span>Subtotal</span>
-                  <span className="font-bold text-slate-900">₹{subtotal}</span>
-                </div>
-                {discountAmount > 0 && (
-                  <div className="flex justify-between text-emerald-700">
-                    <span>Coupon Discount</span>
-                    <span className="font-black">-₹{discountAmount}</span>
-                  </div>
-                )}
-                <div className="flex justify-between">
-                  <span>Delivery Charge</span>
-                  {deliveryCharge === 0 ? (
-                    <span className="text-emerald-700 font-black">FREE</span>
-                  ) : (
-                    <span className="font-bold text-slate-900">₹{deliveryCharge}</span>
-                  )}
-                </div>
-                <div className="border-t border-slate-200 pt-2 flex justify-between text-base font-black text-slate-900">
-                  <span>Total Payable</span>
-                  <span className="text-green-700 text-xl">₹{totalAmount}</span>
-                </div>
-              </div>
-
-              <button
-                disabled={isProcessing}
-                onClick={handlePlaceOrder}
-                className="w-full py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:opacity-60 text-white font-black text-sm rounded-2xl shadow-md shadow-green-700/20 transition flex items-center justify-center gap-2 active:scale-98"
-              >
-                {isProcessing ? 'Confirming Order with Store...' : `Place Order • ₹${totalAmount}`}
-              </button>
-
-              <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400 font-medium">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>100% Safe & Trusted Kirana Delivery</span>
-              </div>
+                    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${on ? 'border-leaf-500' : 'border-line'}`}>
+                      {on && <span className="h-2.5 w-2.5 rounded-full bg-leaf-500" />}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-          </div>
+          </section>
         </div>
 
-        {/* Modal: Add Delivery Address */}
-        {showAddAddress && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-            <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
-              <h3 className="text-base font-extrabold text-slate-900">Add New Delivery Address</h3>
-
-              <form onSubmit={handleSaveNewAddress} className="space-y-3">
-                <input
-                  type="text"
-                  required
-                  placeholder="Full Name"
-                  value={newAddrName}
-                  onChange={(e) => setNewAddrName(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
-                />
-                <input
-                  type="tel"
-                  required
-                  placeholder="Mobile Number"
-                  value={newAddrPhone}
-                  onChange={(e) => setNewAddrPhone(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
-                />
-                <input
-                  type="text"
-                  required
-                  placeholder="House / Flat / Block No"
-                  value={newAddrHouse}
-                  onChange={(e) => setNewAddrHouse(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
-                />
-                <textarea
-                  required
-                  rows={2}
-                  placeholder="Street / Society / Area"
-                  value={newAddrStreet}
-                  onChange={(e) => setNewAddrStreet(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
-                />
-
-                <div className="flex gap-2">
-                  {(['home', 'work', 'other'] as const).map((type) => (
-                    <button
-                      type="button"
-                      key={type}
-                      onClick={() => setNewAddrType(type)}
-                      className={`flex-1 py-1.5 text-xs font-bold uppercase rounded-xl border transition ${
-                        newAddrType === type
-                          ? 'bg-green-600 text-white border-green-600'
-                          : 'bg-slate-50 text-slate-700 border-slate-200'
-                      }`}
-                    >
-                      {type}
-                    </button>
-                  ))}
+        <aside className="min-w-0 space-y-3 md:sticky md:top-[96px] md:self-start">
+          <section className="card px-4 py-4">
+            <h2 className="mb-3 text-sm font-bold text-ink">
+              Order summary · {totalItems} item{totalItems > 1 ? 's' : ''}
+            </h2>
+            <div className="no-scrollbar mb-4 flex gap-2 overflow-x-auto">
+              {items.map((i) => (
+                <div key={i.product.id} className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-line bg-tile/60">
+                  <ProductImage src={i.product.image_url} alt={i.product.name} className="h-full w-full object-cover" />
+                  {i.quantity > 1 && (
+                    <span className="absolute bottom-0.5 right-0.5 rounded bg-ink/80 px-1 text-[10px] font-bold text-white">×{i.quantity}</span>
+                  )}
                 </div>
-
-                <div className="pt-2 flex gap-2">
-                  <button
-                    type="submit"
-                    className="flex-1 py-2.5 bg-green-600 text-white font-bold text-xs rounded-xl shadow-xs"
-                  >
-                    Save Address
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowAddAddress(false)}
-                    className="flex-1 py-2.5 bg-slate-100 text-slate-700 font-bold text-xs rounded-xl"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
+              ))}
             </div>
+            <dl className="tabular space-y-2 text-[13px]">
+              <div className="flex justify-between text-ink-soft">
+                <dt>Items total</dt>
+                <dd className="text-ink">{formatINR(subtotal)}</dd>
+              </div>
+              <div className="flex justify-between text-ink-soft">
+                <dt>Delivery charge</dt>
+                <dd className={deliveryCharge === 0 ? 'font-semibold text-leaf-600' : 'text-ink'}>
+                  {deliveryCharge === 0 ? 'FREE' : formatINR(deliveryCharge)}
+                </dd>
+              </div>
+              {discountAmount > 0 && (
+                <div className="flex justify-between text-leaf-700">
+                  <dt>Coupon discount</dt>
+                  <dd>−{formatINR(discountAmount)}</dd>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-line pt-3 text-[15px] font-bold text-ink">
+                <dt>To pay</dt>
+                <dd>{formatINR(totalAmount)}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <div className="hidden md:block">
+            {blocker && <p className="mb-2 text-[13px] font-medium text-orange-700">{blocker}</p>}
+            <button onClick={placeOrder} disabled={!!blocker || placing} className="btn-primary h-14 w-full justify-between px-5 text-base">
+              <span className="tabular">{formatINR(totalAmount)}</span>
+              <span className="flex items-center gap-1">
+                {placing ? <Loader2 className="h-5 w-5 animate-spin" /> : <>Place order <ChevronRight className="h-5 w-5" /></>}
+              </span>
+            </button>
+            <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-ink-muted">
+              <ShieldCheck className="h-3.5 w-3.5 text-leaf-500" /> You pay only when the order reaches you
+            </p>
           </div>
-        )}
-      </main>
+        </aside>
+      </div>
+
+      {/* Mobile CTA */}
+      <div className="pb-safe fixed inset-x-0 bottom-0 z-40 border-t border-line bg-white shadow-bar md:hidden">
+        {blocker && <p className="bg-orange-50 px-4 py-2 text-xs font-medium text-orange-800">{blocker}</p>}
+        <div className="px-3 py-3">
+          <button onClick={placeOrder} disabled={!!blocker || placing} className="btn-primary h-14 w-full justify-between px-4">
+            <span className="text-left leading-tight">
+              <span className="tabular block text-[15px] font-bold">{formatINR(totalAmount)}</span>
+              <span className="block text-[11px] font-medium uppercase tracking-wide text-white/80">
+                {payment === 'cod' ? 'Cash on delivery' : 'UPI on delivery'}
+              </span>
+            </span>
+            <span className="flex items-center gap-1 text-[15px]">
+              {placing ? <Loader2 className="h-5 w-5 animate-spin" /> : <>Place order <ChevronRight className="h-5 w-5" /></>}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <AddressPicker open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={setAddressId} selectedId={address?.id} />
+    </main>
+  );
+}
+
+export default function CheckoutPage() {
+  return (
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <SiteHeader hideOnMobile />
+      <PageHeader title="Checkout" backHref="/cart" />
+      <RequireAuth>
+        <CheckoutView />
+      </RequireAuth>
     </div>
   );
 }

@@ -4,9 +4,9 @@ import React, { useState } from 'react';
 import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
-import { Settings, Save, Store, Clock, MapPin, Truck, Power } from 'lucide-react';
+import { Settings, Save, Store, Clock, Truck, Power } from 'lucide-react';
 
-export default function AdminSettingsPage() {
+function SettingsForm() {
   const { settings, updateSettings } = useStore();
   const { showToast } = useToast();
 
@@ -20,10 +20,31 @@ export default function AdminSettingsPage() {
   const [freeDeliveryAbove, setFreeDeliveryAbove] = useState(String(settings.free_delivery_above));
   const [minOrder, setMinOrder] = useState(String(settings.min_order_amount));
   const [isStoreOpen, setIsStoreOpen] = useState(settings.is_store_open);
+  const [openingTime, setOpeningTime] = useState((settings.opening_time || '07:00').slice(0, 5));
+  const [closingTime, setClosingTime] = useState((settings.closing_time || '22:00').slice(0, 5));
+  const [etaMinutes, setEtaMinutes] = useState(String(settings.delivery_eta_minutes || 30));
+  const [radiusKm, setRadiusKm] = useState(String(settings.delivery_radius_km));
+  const [pincodes, setPincodes] = useState((settings.serviceable_pincodes || []).join(', '));
+  const [error, setError] = useState<string | null>(null);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    const pinList = pincodes
+      .split(/[\s,]+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const badPin = pinList.find((p) => !/^[1-9]\d{5}$/.test(p));
+    if (badPin) return setError(`“${badPin}” is not a valid 6-digit pincode.`);
+    const nums = [deliveryCharge, freeDeliveryAbove, minOrder, etaMinutes, radiusKm].map(Number);
+    if (nums.some((n) => Number.isNaN(n) || n < 0)) return setError('Amounts and distances must be positive numbers.');
+    if (!openingTime || !closingTime) return setError('Set both opening and closing time.');
+    setError(null);
     updateSettings({
+      opening_time: `${openingTime}:00`,
+      closing_time: `${closingTime}:00`,
+      delivery_eta_minutes: Math.max(5, Number(etaMinutes)),
+      delivery_radius_km: Number(radiusKm),
+      serviceable_pincodes: Array.from(new Set(pinList)),
       store_name: storeName,
       tagline,
       phone,
@@ -133,6 +154,42 @@ export default function AdminSettingsPage() {
             </div>
           </div>
 
+          {/* Hours & delivery area */}
+          <div className="bg-slate-800/80 p-6 rounded-3xl border border-slate-700/80 shadow-sm space-y-4">
+            <h3 className="font-black text-white text-sm flex items-center gap-2">
+              <Clock className="w-4 h-4 text-green-400" /> Store hours & delivery area
+            </h3>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="space-y-1">
+                <label className="font-bold text-slate-300">Opens at</label>
+                <input type="time" required value={openingTime} onChange={(e) => setOpeningTime(e.target.value)} className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none" />
+              </div>
+              <div className="space-y-1">
+                <label className="font-bold text-slate-300">Closes at</label>
+                <input type="time" required value={closingTime} onChange={(e) => setClosingTime(e.target.value)} className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none" />
+              </div>
+              <div className="space-y-1">
+                <label className="font-bold text-slate-300">Delivery time shown (min)</label>
+                <input type="number" min={5} required value={etaMinutes} onChange={(e) => setEtaMinutes(e.target.value)} className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none" />
+              </div>
+              <div className="space-y-1">
+                <label className="font-bold text-slate-300">Delivery radius (km)</label>
+                <input type="number" min={0} step="0.5" required value={radiusKm} onChange={(e) => setRadiusKm(e.target.value)} className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none" />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="font-bold text-slate-300">Deliverable pincodes</label>
+              <textarea
+                rows={2}
+                value={pincodes}
+                onChange={(e) => setPincodes(e.target.value)}
+                placeholder="201001, 201009, 201012 — leave empty to accept all"
+                className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none"
+              />
+              <p className="text-[11px] text-slate-500">Customers can only check out to these pincodes. Leave empty to allow any.</p>
+            </div>
+          </div>
+
           {/* Contact & Address */}
           <div className="bg-slate-800/80 p-6 rounded-3xl border border-slate-700/80 shadow-sm space-y-4">
             <h3 className="font-black text-white text-sm flex items-center gap-2">
@@ -182,7 +239,18 @@ export default function AdminSettingsPage() {
                 />
               </div>
 
-              <div className="sm:col-span-2 space-y-1">
+              <div className="space-y-1">
+                <label className="font-bold text-slate-300">City</label>
+                <input
+                  type="text"
+                  required
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
                 <label className="font-bold text-slate-300">Physical Store Address</label>
                 <input
                   type="text"
@@ -195,7 +263,8 @@ export default function AdminSettingsPage() {
             </div>
           </div>
 
-          <div className="pt-2">
+          <div className="pt-2 space-y-3">
+            {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
             <button
               type="submit"
               className="px-6 py-3.5 bg-green-600 hover:bg-green-500 text-white font-black text-xs sm:text-sm rounded-xl shadow-lg transition flex items-center gap-2"
@@ -207,4 +276,10 @@ export default function AdminSettingsPage() {
       </div>
     </AdminLayoutWrapper>
   );
+}
+
+export default function AdminSettingsPage() {
+  const { isHydrated } = useStore();
+  // Remount once saved settings load so the form never edits stale defaults.
+  return <SettingsForm key={isHydrated ? 'ready' : 'loading'} />;
 }

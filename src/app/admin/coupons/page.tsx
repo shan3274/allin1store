@@ -5,7 +5,6 @@ import { AdminLayoutWrapper } from '@/components/AdminLayoutWrapper';
 import { useStore } from '@/context/StoreContext';
 import { useToast } from '@/context/ToastContext';
 import { Tag, Plus, Trash2, CheckCircle2 } from 'lucide-react';
-import { Coupon } from '@/data/mockInventory';
 
 export default function AdminCouponsPage() {
   const { coupons, addCoupon, deleteCoupon } = useStore();
@@ -144,7 +143,7 @@ export default function AdminCouponsPage() {
                     <label className="font-bold text-slate-300">Type</label>
                     <select
                       value={discountType}
-                      onChange={(e) => setDiscountType(e.target.value as any)}
+                      onChange={(e) => setDiscountType(e.target.value as 'percentage' | 'flat')}
                       className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none"
                     >
                       <option value="flat">Flat Rupee (₹)</option>

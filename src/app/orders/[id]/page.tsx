@@ -1,290 +1,290 @@
 'use client';
 
-import React, { use, useState } from 'react';
+import React, { use, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Navbar } from '@/components/Navbar';
+import { HelpCircle, MapPin, PackageSearch, Phone, Printer, RotateCcw, Wallet } from 'lucide-react';
+import { SiteHeader } from '@/components/SiteHeader';
+import { PageHeader } from '@/components/ui/PageHeader';
+import { RequireAuth } from '@/components/ui/RequireAuth';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { ProductImage } from '@/components/ui/ProductImage';
+import { Sheet } from '@/components/ui/Sheet';
+import { OrderStatusIcon } from '@/components/OrderStatusIcon';
 import { useStore } from '@/context/StoreContext';
-import { useCart } from '@/context/CartContext';
+import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import {
-  ArrowLeft,
-  Clock,
-  MapPin,
-  CheckCircle2,
-  AlertCircle,
-  HelpCircle,
-  RotateCcw,
-  Phone,
-  Package,
-  Bike
-} from 'lucide-react';
+import { useReorder } from '@/lib/useReorder';
+import { PAYMENT_METHOD_LABEL, formatDateTime, formatINR } from '@/lib/format';
+import type { OrderStatus } from '@/types/database';
 
-interface OrderTrackingPageProps {
-  params: Promise<{ id: string }>;
+const STEPS: { status: OrderStatus; label: string }[] = [
+  { status: 'pending', label: 'Placed' },
+  { status: 'packed', label: 'Packed' },
+  { status: 'out_for_delivery', label: 'On the way' },
+  { status: 'delivered', label: 'Delivered' },
+];
+const RANK: Record<string, number> = { pending: 0, confirmed: 0.5, packed: 1, out_for_delivery: 2, delivered: 3 };
+
+const CANCEL_REASONS = ['Ordered by mistake', 'Want to change items', 'Want to change address', 'Delivery is taking too long', 'Other'];
+
+function headline(status: OrderStatus, slot?: string | null): { title: string; body: string } {
+  switch (status) {
+    case 'pending':
+      return { title: 'Order placed', body: slot ? `Scheduled for ${slot}` : 'Waiting for the store to confirm' };
+    case 'confirmed':
+      return { title: 'Order confirmed', body: 'The store is picking your items' };
+    case 'packed':
+      return { title: 'Packed and ready', body: 'A rider will pick it up shortly' };
+    case 'out_for_delivery':
+      return { title: 'On the way', body: 'Your rider is heading to you' };
+    case 'delivered':
+      return { title: 'Delivered', body: 'Thanks for shopping with us' };
+    default:
+      return { title: 'Order cancelled', body: '' };
+  }
 }
 
-export default function OrderTrackingPage({ params }: OrderTrackingPageProps) {
-  const resolvedParams = use(params);
-  const { getOrderById, cancelOrder, settings, getProductById } = useStore();
-  const { addToCart } = useCart();
+function OrderView({ id }: { id: string }) {
+  const { getOrderById, cancelOrder, settings, getProductById, isHydrated } = useStore();
+  const { user } = useAuth();
   const { showToast } = useToast();
+  const reorder = useReorder();
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [reason, setReason] = useState(CANCEL_REASONS[0]);
+  const [, forceTick] = useState(0);
 
-  const [showCancelModal, setShowCancelModal] = useState(false);
-  const [cancelReason, setCancelReason] = useState('Placed by mistake');
+  // Re-render every 30s so the ETA countdown stays fresh.
+  useEffect(() => {
+    const t = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
-  const order = getOrderById(resolvedParams.id);
+  const order = getOrderById(id);
 
-  if (!order) {
+  if (!order || order.user_id !== user?.id) {
+    if (!isHydrated) return null;
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col">
-        <Navbar />
-        <main className="max-w-lg mx-auto w-full px-4 py-16 text-center space-y-4">
-          <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-2xl">
-            📦
-          </div>
-          <h2 className="text-xl font-bold text-slate-900">Order Not Found</h2>
-          <p className="text-xs text-slate-500">We could not retrieve order #{resolvedParams.id}.</p>
-          <Link
-            href="/orders"
-            className="inline-block px-5 py-2.5 bg-green-600 text-white font-bold text-xs rounded-xl shadow-xs"
-          >
-            Go to My Orders
-          </Link>
-        </main>
-      </div>
+      <EmptyState
+        icon={<PackageSearch className="h-9 w-9" />}
+        title="Order not found"
+        description="We couldn’t find this order on your account."
+        action={{ label: 'View your orders', href: '/orders' }}
+      />
     );
   }
 
-  const handleReorder = () => {
-    if (!order.items?.length) return;
-    let addedCount = 0;
-    order.items.forEach((item) => {
-      if (item.product_id) {
-        const prod = getProductById(item.product_id);
-        if (prod && prod.stock_quantity > 0) {
-          addToCart(prod, item.quantity);
-          addedCount++;
-        }
-      }
-    });
-
-    if (addedCount > 0) {
-      showToast({
-        type: 'success',
-        title: 'Reordered!',
-        message: `${addedCount} items added back to your cart.`,
-      });
-    }
-  };
-
-  const handleConfirmCancel = () => {
-    cancelOrder(order.id, cancelReason);
-    setShowCancelModal(false);
-    showToast({
-      type: 'info',
-      title: 'Order Cancelled',
-      message: 'Your order was successfully cancelled.',
-    });
-  };
-
+  const { title, body } = headline(order.status, order.delivery_slot);
+  const isCancelled = order.status === 'cancelled' || order.status === 'returned';
+  const isActive = !isCancelled && order.status !== 'delivered';
   const canCancel = order.status === 'pending' || order.status === 'confirmed';
+  const rank = RANK[order.status] ?? 0;
+  const eta = settings.delivery_eta_minutes || 30;
+  const minsLeft = !order.delivery_slot
+    ? Math.max(2, Math.round((new Date(order.created_at).getTime() + eta * 60000 - Date.now()) / 60000))
+    : null;
+  const stepTime = (s: OrderStatus) => order.timeline.find((t) => t.status === s && t.completed)?.timestamp;
+
+  const confirmCancel = () => {
+    cancelOrder(order.id, reason, 'Customer');
+    setCancelOpen(false);
+    showToast({ type: 'info', title: 'Order cancelled', message: 'You won’t be charged for this order.' });
+  };
 
   return (
-    <div className="min-h-screen bg-slate-100/60 flex flex-col text-slate-900">
-      <Navbar />
-
-      <main className="max-w-3xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6 flex-1">
-        <div className="flex items-center justify-between">
-          <Link href="/orders" className="text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1">
-            <ArrowLeft className="w-3.5 h-3.5" /> All Orders
-          </Link>
-          <span className="font-mono text-xs font-extrabold bg-slate-200/80 px-2.5 py-1 rounded-lg text-slate-800">
-            Order #{order.order_number}
-          </span>
-        </div>
-
-        {/* Status Highlight Banner */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-2xs space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
-            <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
-                Current Status
-              </span>
-              <h1 className="text-xl sm:text-2xl font-black text-slate-900 capitalize mt-0.5">
-                {order.status === 'delivered'
-                  ? 'Delivered at Doorstep'
-                  : order.status === 'out_for_delivery'
-                  ? 'Rider is Out for Delivery 🛵'
-                  : order.status === 'packed'
-                  ? 'Order Packed & Ready'
-                  : order.status === 'confirmed'
-                  ? 'Order Confirmed by Store'
-                  : order.status === 'cancelled'
-                  ? 'Order Cancelled'
-                  : 'Order Placed & Awaiting Store'}
-              </h1>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <a
-                href={`tel:${settings.phone}`}
-                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold rounded-xl flex items-center gap-1.5 transition"
-              >
-                <Phone className="w-3.5 h-3.5 text-green-600" /> Call Store
-              </a>
-              <Link
-                href="/help"
-                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold rounded-xl flex items-center gap-1.5 transition"
-              >
-                <HelpCircle className="w-3.5 h-3.5 text-slate-600" /> Help
-              </Link>
-            </div>
+    <main className="mx-auto w-full max-w-2xl flex-1 space-y-3 px-3 pb-28 pt-3 md:px-6 md:pt-2">
+      {/* Status */}
+      <section className="card px-4 py-5">
+        <div className="flex items-center gap-3.5">
+          <OrderStatusIcon status={order.status} size="lg" />
+          <div className="min-w-0 flex-1">
+            <p className="text-lg font-bold text-ink">{title}</p>
+            <p className="text-sm text-ink-muted">
+              {isCancelled ? order.cancelled_reason || 'This order was cancelled' : body}
+            </p>
           </div>
-
-          {/* Real-time Order Progress Timeline */}
-          {order.status !== 'cancelled' ? (
-            <div className="py-2 space-y-4">
-              <h3 className="text-xs font-black uppercase tracking-wider text-slate-400">
-                Live Timeline
-              </h3>
-              <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
-                {order.timeline.map((step, idx) => (
-                  <div key={idx} className="relative flex items-start gap-3">
-                    <div
-                      className={`absolute -left-6 top-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                        step.completed
-                          ? 'bg-green-600 text-white ring-4 ring-green-100'
-                          : 'bg-slate-200 text-slate-500'
-                      }`}
-                    >
-                      {step.completed ? '✓' : idx + 1}
-                    </div>
-                    <div>
-                      <h4
-                        className={`text-xs font-bold ${
-                          step.completed ? 'text-slate-900' : 'text-slate-400'
-                        }`}
-                      >
-                        {step.label}
-                      </h4>
-                      <p className="text-[11px] text-slate-500">{step.timestamp}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 space-y-1">
-              <p className="font-bold">This order was cancelled.</p>
-              <p className="text-rose-600">Reason: {order.cancelled_reason || 'Cancelled by customer'}</p>
+          {isActive && minsLeft !== null && (
+            <div className="text-right">
+              <p className="tabular text-2xl font-extrabold leading-none text-leaf-600">{minsLeft}</p>
+              <p className="text-[11px] font-semibold uppercase text-ink-muted">mins</p>
             </div>
           )}
         </div>
 
-        {/* Order Details & Summary */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-2xs space-y-4">
-          <h3 className="font-extrabold text-slate-900 text-sm">Items Ordered</h3>
+        {!isCancelled && (
+          <ol className="mt-6 grid grid-cols-4">
+            {STEPS.map((s, i) => {
+              const done = rank >= i;
+              const ts = stepTime(s.status);
+              return (
+                <li key={s.status} className="relative flex flex-col items-center text-center">
+                  {i > 0 && (
+                    <span className={`absolute right-1/2 top-[9px] h-0.5 w-full ${rank >= i ? 'bg-leaf-500' : 'bg-line'}`} aria-hidden />
+                  )}
+                  <span
+                    className={`relative z-10 flex h-5 w-5 items-center justify-center rounded-full border-2 ${
+                      done ? 'border-leaf-500 bg-leaf-500' : 'border-line bg-white'
+                    }`}
+                  >
+                    {done && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+                  </span>
+                  <span className={`mt-2 text-xs font-semibold ${done ? 'text-ink' : 'text-ink-faint'}`}>{s.label}</span>
+                  {ts && <span className="text-[10px] text-ink-faint">{formatDateTime(ts).split(', ').pop()}</span>}
+                </li>
+              );
+            })}
+          </ol>
+        )}
 
-          <div className="divide-y divide-slate-100 text-xs">
-            {order.items?.map((item, idx) => (
-              <div key={idx} className="py-2.5 flex justify-between items-center">
-                <div>
-                  <p className="font-bold text-slate-900">{item.product_name}</p>
-                  <p className="text-slate-500 font-medium">Quantity: {item.quantity}</p>
+        <div className="no-print mt-5 grid grid-cols-2 gap-2">
+          <a href={`tel:${settings.phone.replace(/\s/g, '')}`} className="btn-secondary h-11 py-0 text-[13px]">
+            <Phone className="h-4 w-4" /> Call store
+          </a>
+          <Link href={`/help?order=${order.order_number}`} className="btn-secondary h-11 py-0 text-[13px]">
+            <HelpCircle className="h-4 w-4" /> Get help
+          </Link>
+        </div>
+      </section>
+
+      {/* Items */}
+      <section className="card px-4 py-4">
+        <h2 className="mb-3 text-sm font-bold text-ink">
+          {order.items?.length} item{(order.items?.length ?? 0) > 1 ? 's' : ''} in this order
+        </h2>
+        <ul className="space-y-3">
+          {order.items?.map((i) => {
+            const p = i.product_id ? getProductById(i.product_id) : undefined;
+            return (
+              <li key={i.id} className="flex items-center gap-3">
+                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-line bg-tile/60">
+                  <ProductImage src={p?.image_url} alt={i.product_name} className="h-full w-full object-cover" fallbackClassName="text-sm" />
                 </div>
-                <span className="font-bold text-slate-900">₹{item.total_price}</span>
-              </div>
-            ))}
+                <div className="min-w-0 flex-1">
+                  <p className="line-clamp-2 text-[13px] leading-snug text-ink">{i.product_name}</p>
+                  <p className="tabular text-xs text-ink-muted">
+                    {i.quantity} × {formatINR(i.unit_price)}
+                  </p>
+                </div>
+                <p className="tabular text-[13px] font-semibold text-ink">{formatINR(i.total_price)}</p>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      {/* Bill */}
+      <section className="card px-4 py-4">
+        <h2 className="mb-3 text-sm font-bold text-ink">Bill summary</h2>
+        <dl className="tabular space-y-2 text-[13px]">
+          <div className="flex justify-between text-ink-soft">
+            <dt>Items total</dt>
+            <dd className="text-ink">{formatINR(order.subtotal)}</dd>
           </div>
-
-          <div className="border-t border-slate-100 pt-3 space-y-1.5 text-xs text-slate-600 font-semibold">
-            <div className="flex justify-between">
-              <span>Subtotal:</span>
-              <span>₹{order.subtotal}</span>
-            </div>
-            {order.discount_amount > 0 && (
-              <div className="flex justify-between text-emerald-700">
-                <span>Discount:</span>
-                <span>-₹{order.discount_amount}</span>
-              </div>
-            )}
-            <div className="flex justify-between">
-              <span>Delivery Fee:</span>
-              <span>{order.delivery_charge === 0 ? 'FREE' : `₹${order.delivery_charge}`}</span>
-            </div>
-            <div className="flex justify-between font-black text-slate-900 text-sm pt-2 border-t border-slate-100">
-              <span>Total Paid:</span>
-              <span className="text-green-700 text-base">₹{order.total_amount}</span>
-            </div>
+          <div className="flex justify-between text-ink-soft">
+            <dt>Delivery charge</dt>
+            <dd className={order.delivery_charge === 0 ? 'font-semibold text-leaf-600' : 'text-ink'}>
+              {order.delivery_charge === 0 ? 'FREE' : formatINR(order.delivery_charge)}
+            </dd>
           </div>
-
-          {/* Delivery destination */}
-          <div className="p-3 bg-slate-50 rounded-2xl flex items-start gap-2.5 text-xs text-slate-600">
-            <MapPin className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
-            <div>
-              <p className="font-bold text-slate-900">{order.shipping_name} ({order.shipping_phone})</p>
-              <p className="text-slate-500 mt-0.5">{order.shipping_address}, {order.shipping_city}</p>
+          {order.discount_amount > 0 && (
+            <div className="flex justify-between text-leaf-700">
+              <dt>Discount</dt>
+              <dd>−{formatINR(order.discount_amount)}</dd>
             </div>
+          )}
+          <div className="flex justify-between border-t border-line pt-3 text-[15px] font-bold text-ink">
+            <dt>{order.payment_status === 'paid' ? 'Paid' : 'To pay'}</dt>
+            <dd>{formatINR(order.total_amount)}</dd>
           </div>
+        </dl>
+      </section>
 
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={handleReorder}
-              className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white font-black text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-1.5"
-            >
-              <RotateCcw className="w-3.5 h-3.5" /> Reorder Basket
-            </button>
-
-            {canCancel && (
-              <button
-                onClick={() => setShowCancelModal(true)}
-                className="py-3 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs rounded-xl transition"
-              >
-                Cancel Order
-              </button>
-            )}
+      {/* Details */}
+      <section className="card space-y-4 px-4 py-4 text-[13px]">
+        <h2 className="text-sm font-bold text-ink">Order details</h2>
+        <div className="flex gap-3">
+          <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
+          <div>
+            <p className="font-semibold text-ink">{order.shipping_name} · {order.shipping_phone}</p>
+            <p className="text-ink-muted">
+              {order.shipping_address}, {order.shipping_city} {order.shipping_pincode}
+            </p>
           </div>
         </div>
+        <div className="flex gap-3">
+          <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
+          <p className="text-ink-muted">
+            {PAYMENT_METHOD_LABEL[order.payment_method] ?? order.payment_method} ·{' '}
+            <span className="capitalize">{order.payment_status === 'pending' ? 'pay on delivery' : order.payment_status}</span>
+          </p>
+        </div>
+        <dl className="grid grid-cols-2 gap-y-1.5 border-t border-line pt-3 text-ink-muted">
+          <dt>Order ID</dt>
+          <dd className="tabular text-right font-medium text-ink">#{order.order_number}</dd>
+          <dt>Placed on</dt>
+          <dd className="text-right text-ink">{formatDateTime(order.created_at)}</dd>
+          {order.delivery_slot && (
+            <>
+              <dt>Delivery slot</dt>
+              <dd className="text-right text-ink">{order.delivery_slot}</dd>
+            </>
+          )}
+        </dl>
+      </section>
 
-        {/* Cancel Confirmation Modal */}
-        {showCancelModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-              <h3 className="text-base font-extrabold text-slate-900">Cancel Order?</h3>
-              <p className="text-xs text-slate-500">
-                Are you sure you want to cancel order #{order.order_number}?
-              </p>
-
-              <select
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
-              >
-                <option value="Placed by mistake">Placed by mistake</option>
-                <option value="Want to change address">Want to change address</option>
-                <option value="Taking too long">Taking too long</option>
-                <option value="Need to add more products">Need to add more products</option>
-              </select>
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  onClick={handleConfirmCancel}
-                  className="flex-1 py-2.5 bg-rose-600 text-white font-bold text-xs rounded-xl shadow-xs"
-                >
-                  Yes, Cancel Order
-                </button>
-                <button
-                  onClick={() => setShowCancelModal(false)}
-                  className="flex-1 py-2.5 bg-slate-100 text-slate-700 font-bold text-xs rounded-xl"
-                >
-                  Keep Order
-                </button>
-              </div>
-            </div>
-          </div>
+      <div className="no-print grid grid-cols-2 gap-2">
+        {canCancel ? (
+          <button onClick={() => setCancelOpen(true)} className="btn-secondary text-rose-600">
+            Cancel order
+          </button>
+        ) : (
+          <button onClick={() => window.print()} className="btn-secondary">
+            <Printer className="h-4 w-4" /> Invoice
+          </button>
         )}
-      </main>
+        <button onClick={() => reorder(order)} className="btn-primary">
+          <RotateCcw className="h-4 w-4" /> Order again
+        </button>
+      </div>
+
+      <Sheet
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        title="Cancel this order?"
+        description="Tell us why — it helps the store improve."
+        size="sm"
+        footer={
+          <div className="flex gap-2">
+            <button onClick={() => setCancelOpen(false)} className="btn-secondary flex-1">
+              Keep order
+            </button>
+            <button onClick={confirmCancel} className="btn flex-1 bg-rose-600 text-white hover:bg-rose-700">
+              Cancel order
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-2" role="radiogroup">
+          {CANCEL_REASONS.map((r) => (
+            <label key={r} className="flex cursor-pointer items-center gap-3 rounded-xl border border-line px-3.5 py-3 text-sm has-[:checked]:border-leaf-500 has-[:checked]:bg-leaf-50/60">
+              <input type="radio" name="reason" checked={reason === r} onChange={() => setReason(r)} className="accent-leaf-500" />
+              {r}
+            </label>
+          ))}
+        </div>
+      </Sheet>
+    </main>
+  );
+}
+
+export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  return (
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <SiteHeader hideOnMobile />
+      <PageHeader title="Order summary" backHref="/orders" />
+      <RequireAuth>
+        <OrderView id={id} />
+      </RequireAuth>
     </div>
   );
 }
